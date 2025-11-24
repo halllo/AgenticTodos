@@ -1,4 +1,5 @@
 <Solution>
   <Project Path="apphost/AppHost.csproj" />
   <Project Path="backend/AgenticTodos.Backend.csproj" />
+  <Project Path="cli/AgenticTodos.Cli.csproj" />
 </Solution>
