@@ -1,0 +1,6 @@
+{
+  "/agui": {
+  "target": "http://localhost:5288",
+  "secure": false
+  }
+}

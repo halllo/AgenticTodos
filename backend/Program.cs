@@ -19,8 +19,8 @@ app.MapOpenApi();
 app.MapScalarApiReference();
 app.MapGet("/", () => "Hello World!");
 app.MapAGUI("/agui", 
-    //CreateOpenAIAgent(builder)
-    CreateAmazonBedrockAgent(builder)
+    CreateOpenAIAgent(builder)
+    //CreateAmazonBedrockAgent(builder)
 );
 
 app.Run();
