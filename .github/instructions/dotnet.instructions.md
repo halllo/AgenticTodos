@@ -1,6 +1,6 @@
 ---
 description: 'dotnet-specific coding standards and best practices'
-applyTo: 'backend/**'
+applyTo: 'backend/**, cli/**, tests/**'
 ---
 
 # dotnet Coding Instructions

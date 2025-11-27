@@ -23,6 +23,8 @@
   "private": true,
   "packageManager": "npm@11.6.0",
   "dependencies": {
+    "@ag-ui/client": "^0.0.41",
+    "@ag-ui/core": "^0.0.41",
     "@angular/common": "^21.0.0",
     "@angular/compiler": "^21.0.0",
     "@angular/core": "^21.0.0",
