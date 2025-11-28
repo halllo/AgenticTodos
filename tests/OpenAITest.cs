@@ -4,10 +4,11 @@ using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Configuration;
 using Xunit.Abstractions;
 using AgenticTodos.Backend;
+using OpenAI;
 
 namespace AgenticTodos.Tests;
 
-public class AmazonBedrockTest(ITestOutputHelper output)
+public class OpenAITest(ITestOutputHelper output)
 {
     [Fact]
     public async Task WithoutAdditionalModelRequestFields()
@@ -60,16 +61,9 @@ public class AmazonBedrockTest(ITestOutputHelper output)
             .AddUserSecrets("99db47a8-e571-40ad-829f-0733c2f6e62b")
             .Build();
 
-        var runtime = new AmazonBedrockRuntimeClient(
-            awsAccessKeyId: config["AWSBedrockAccessKeyId"]!,
-            awsSecretAccessKey: config["AWSBedrockSecretAccessKey"]!,
-            region: Amazon.RegionEndpoint.GetBySystemName(config["AWSBedrockRegion"]!));
-
-        var client = runtime
-            .AsIChatClient("eu.anthropic.claude-sonnet-4-20250514-v1:0")
-            .AsBuilder()
-            .Use(client => new OmitAdditionalPropertiesMiddleware(client, ["ag_ui_thread_id"]))
-            .Build();
+        var client = new OpenAIClient(config["OPENAI_API_KEY"] ?? throw new InvalidOperationException("OPENAI_API_KEY is not set."))
+            .GetChatClient("gpt-4o")
+            .AsIChatClient();
 
         return client;
     }

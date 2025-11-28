@@ -8,7 +8,7 @@ This experimental application aims to explore the following technologies:
 
 ## Problems
 
-### AmazonBedrockRuntimeClient does not support AdditionalProperties
+### ✅ AmazonBedrockRuntimeClient does not support AdditionalProperties
 
 Amazon Bedrock Runtime client throws this exception, when used with AG-UI:
 
@@ -37,12 +37,12 @@ var response = await client.GetResponseAsync(
     });
 ```
 
-We can probably circumvent that by removing these `AdditionalProperties` and reapply them to the reponse.
+We can circumvent that by removing these `AdditionalProperties` from the chat options via [OmitAdditionalPropertiesMiddleware.cs](backend/OmitAdditionalPropertiesMiddleware.cs). Problem solved.
 
-### AG-UI Client does not support Angular
+### 🚧 AG-UI Client does not support Angular
 
 AG-UI is very well supported by Copilot Kit, but that requires next.js. There is currently no functional Angular support.
 
 We can probably circumvent that by using `@ag-ui/client @ag-ui/core` (⚠️ 4 high severity vulnerabilities) and glue it together.
 
-See [Quickstart - Build clients](https://docs.ag-ui.com/quickstart/clients).
+See [AgentSubscriber](https://docs.ag-ui.com/sdk/js/client/subscriber).

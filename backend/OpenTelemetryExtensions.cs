@@ -2,6 +2,8 @@ using OpenTelemetry;
 using OpenTelemetry.Metrics;
 using OpenTelemetry.Trace;
 
+namespace AgenticTodos.Backend;
+
 public static class OpenTelemetryExtensions
 {
     public static TBuilder ConfigureOpenTelemetry<TBuilder>(TBuilder builder) where TBuilder : IHostApplicationBuilder
