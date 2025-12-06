@@ -5,7 +5,7 @@ using Microsoft.Agents.AI.AGUI;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 
-namespace STP.LegalTwin.Cli.Verbs
+namespace AgenticTodos.Backend.Cli.Verbs
 {
     /// <summary>
     /// Taken from https://github.com/microsoft/agent-framework/blob/main/dotnet/samples/AGUIClientServer/AGUIClient/Program.cs
