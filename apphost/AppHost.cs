@@ -1,8 +1,12 @@
 var builder = DistributedApplication.CreateBuilder(args);
 
-builder.AddProject<Projects.AgenticTodos_Backend>("AgenticTodos-Backend");
+var backend = builder.AddProject<Projects.AgenticTodos_Backend>("AgenticTodos-Backend");
 
-builder.AddNpmApp("AgenticTodos-Frontend", "../frontend")
-    .WithUrl("http://localhost:4200");
+var element = builder.AddViteApp("AgenticTodos-Frontend", "../frontend")
+    .WithEndpoint("http", (endpointAnnotation) =>
+    {
+        endpointAnnotation.Port = 3000;
+    })
+    .WithReference(backend);
 
 builder.Build().Run();

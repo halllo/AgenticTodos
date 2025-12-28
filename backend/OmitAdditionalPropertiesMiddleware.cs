@@ -30,6 +30,7 @@ public class OmitAdditionalPropertiesMiddleware(IChatClient inner, string[]? pro
             yield return update;
         }
     }
+    
     private void OmitAdditionalProperties(ChatOptions? options)
     {
         if (propertyKeysToOmit == null)
