@@ -3,71 +3,11 @@ description: 'Angular-specific coding standards and best practices'
 applyTo: 'frontend/**'
 ---
 
-# Persona
-
-You are a dedicated Angular developer who thrives on leveraging the absolute latest features of the framework to build cutting-edge applications. You are currently immersed in Angular v20+, passionately adopting signals for reactive state management, embracing standalone components for streamlined architecture, and utilizing the new control flow for more intuitive template logic. Performance is paramount to you, who constantly seeks to optimize change detection and improve user experience through these modern Angular paradigms. When prompted, assume You are familiar with all the newest APIs and best practices, valuing clean, efficient, and maintainable code.
-
-Whenever you change any code, run `npm run build` to make sure your changes actually compile and work.
-
-## Examples
-
-These are modern examples of how to write an Angular 20 component with signals
-
-```ts
-import { ChangeDetectionStrategy, Component, signal } from '@angular/core';
-
-@Component({
-  selector: '{{tag-name}}-root',
-  template: `
-  <section class="container">
-    @if (isServerRunning()) {
-        <span>Yes, the server is running</span>
-    } @else {
-        <span>No, the server is not running</span>
-    }
-    <button (click)="toggleServerStatus()">Toggle Server Status</button>
-  </section>
-  `,
-  styles: `
-  .container {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    height: 100vh;
-
-    button {
-        margin-top: 10px;
-    }
-  }
-  `
-  changeDetection: ChangeDetectionStrategy.OnPush,
-})
-export class {{ClassName}} {
-  protected readonly isServerRunning = signal(true);
-  toggleServerStatus() {
-    this.isServerRunning.update(isServerRunning => !isServerRunning);
-  }
-}
-```
-
-When you update a component, be sure to put the logic and the styls and the html template in the ts file.
-
-## Resources
-
-Here are some links to the essentials for building Angular applications. Use these to get an understanding of how some of the core functionality works
-https://angular.dev/essentials/components
-https://angular.dev/essentials/signals
-https://angular.dev/essentials/templates
-https://angular.dev/essentials/dependency-injection
+Whenever you change any code, run `npm run build` to make sure your changes actually compile and work!
 
 ## Best practices & Style guide
 
 Here are the best practices and the style guide information.
-
-### Coding Style guide
-
-Here is a link to the most recent Angular style guide https://angular.dev/style-guide
 
 ### TypeScript Best Practices
 
@@ -115,3 +55,47 @@ Here is a link to the most recent Angular style guide https://angular.dev/style-
 - Design services around a single responsibility
 - Use the `providedIn: 'root'` option for singleton services
 - Use the `inject()` function instead of constructor injection
+
+## Examples
+
+These are modern examples of how to write an Angular 20 component with signals
+
+```ts
+import { ChangeDetectionStrategy, Component, signal } from '@angular/core';
+
+@Component({
+  selector: '{{tag-name}}-root',
+  template: `
+  <section class="container">
+    @if (isServerRunning()) {
+        <span>Yes, the server is running</span>
+    } @else {
+        <span>No, the server is not running</span>
+    }
+    <button (click)="toggleServerStatus()">Toggle Server Status</button>
+  </section>
+  `,
+  styles: `
+  .container {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    height: 100vh;
+
+    button {
+        margin-top: 10px;
+    }
+  }
+  `
+  changeDetection: ChangeDetectionStrategy.OnPush,
+})
+export class {{ClassName}} {
+  protected readonly isServerRunning = signal(true);
+  toggleServerStatus() {
+    this.isServerRunning.update(isServerRunning => !isServerRunning);
+  }
+}
+```
+
+When you update a component, be sure to put the logic and the styls and the html template in the ts file.

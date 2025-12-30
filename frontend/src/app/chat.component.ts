@@ -1,8 +1,8 @@
 import { ChangeDetectionStrategy, Component, ElementRef, OnInit, output, signal, viewChild } from '@angular/core';
 import { FormsModule } from '@angular/forms';
-import { AgentSubscriber, HttpAgent, Message as Message2 } from "@ag-ui/client"
+import { AgentSubscriber, HttpAgent, Message as Message } from "@ag-ui/client"
 
-interface Message {
+interface UIMessage {
   role: 'user' | 'assistant';
   content: string;
 }
@@ -269,8 +269,7 @@ interface Message {
 })
 export class ChatComponent implements OnInit {
   protected readonly AGENT_URL = '/agui';
-  protected readonly conversationId = signal<string | null>(null);
-  protected readonly messages = signal<Message[]>([]);
+  protected readonly messages = signal<UIMessage[]>([]);
   protected readonly status = signal('Ready to chat');
   protected readonly isLoading = signal(false);
   protected inputMessage = '';
@@ -278,114 +277,98 @@ export class ChatComponent implements OnInit {
   readonly backgroundColorChange = output<string>();
 
   private readonly messagesContainer = viewChild<ElementRef>('messagesContainer');
-  private pendingToolCalls = new Map<string, any>();
-  private conversationMessages: any[] = [];
+  private agent!: HttpAgent;
+  private pendingToolCall: { id: string, name: string, args: string } | null = null;
+  private toolResultMessages: Message[] = [];
   private readonly tools = [
     {
-      "name": "change_background_color",
-      "description": "Change the left panel background color. Can accept solid colors (e.g., '#1e3a8a', 'red') or gradients (e.g., 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)').",
-      "parameters": {
-        "type": "object",
-        "properties": {
-          "color": {
-            "type": "string",
-            "description": "The background color or gradient to apply to the left panel. Can be a hex color, named color, or CSS gradient."
+      name: "change_background_color",
+      description: "Change the left panel background color. Can accept solid colors (e.g., '#1e3a8a', 'red') or gradients (e.g., 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)').",
+      parameters: {
+        type: "object",
+        properties: {
+          color: {
+            type: "string",
+            description: "The background color or gradient to apply to the left panel. Can be a hex color, named color, or CSS gradient."
           }
         },
-        "required": ["color"]
+        required: ["color"]
       }
     }
   ];
-  private hasToolCallsInProgress = false;
 
-  async ngOnInit() {
-    console.log('ChatComponent initialized.');
-    const agent = new HttpAgent({ url: this.AGENT_URL })
+  ngOnInit() {
+    this.initializeAgent();
+  }
 
-    let pendingToolCall: { id: string, name: string, args: string } | null = null;
-    let localToolResultMessages: Message2[] | null = null;
+  private initializeAgent(): void {
+    if (this.agent) {
+      throw new Error('Agent is already initialized.');
+    }
 
-    // Add persistent subscriber
+    const agent = new HttpAgent({ url: this.AGENT_URL });
     agent.subscribe({
       onTextMessageContentEvent: ({ textMessageBuffer }) => {
-        console.log('Streaming text message content:', textMessageBuffer)
+        this.updateAssistantMessage(textMessageBuffer);
       },
-      onTextMessageEndEvent: async ({ textMessageBuffer, event, messages }) => {
-        console.log('Text message ended:', textMessageBuffer, messages, event)
+      onTextMessageEndEvent: async ({ textMessageBuffer }) => {
+        console.log('Text message ended:', textMessageBuffer);
+        this.updateAssistantMessage(textMessageBuffer);
+        this.status.set('Ready to chat');
       },
       onToolCallStartEvent: ({ event }) => {
-        console.log('Tool call started (per-run handler):', event)
         if (event.toolCallName === "change_background_color") {
-          pendingToolCall = { id: event.toolCallId, name: event.toolCallName, args: '' };
+          this.pendingToolCall = { id: event.toolCallId, name: event.toolCallName, args: '' };
+          this.status.set(`Executing ${event.toolCallName}...`);
         }
       },
       onToolCallArgsEvent: ({ event }) => {
-        console.log('Tool call args received (per-run handler):', event)
-        if (pendingToolCall?.id === event.toolCallId) {
-          pendingToolCall.args += event.delta || '';
+        if (this.pendingToolCall?.id === event.toolCallId) {
+          this.pendingToolCall.args += event.delta || '';
         }
       },
-      onToolCallEndEvent: async ({ event, toolCallName }) => {
-        console.log('Tool call ended (per-run handler):', toolCallName, event)
-        if (pendingToolCall?.id === event.toolCallId) {
-          const args = pendingToolCall.args ? JSON.parse(pendingToolCall.args) : {};
+      onToolCallEndEvent: async ({ toolCallName, toolCallArgs, event }) => {
+        console.log('Tool call', toolCallName, toolCallArgs, event);
+        if (this.pendingToolCall?.id === event.toolCallId) {
+          console.log('Local tool call', toolCallName);
+          const args = this.pendingToolCall.args ? JSON.parse(this.pendingToolCall.args) : {};
+          
+          // Execute the tool locally (TODO, figure our the correct tool)
           const result = this.changeBackgroundColor(args.color || '#1e3a8a');
 
-          localToolResultMessages = [
-            {
-              toolCallId: pendingToolCall.id,
-              id: pendingToolCall.id,
-              role: "tool",
-              content: JSON.stringify(result)
-            }
-          ];
-          pendingToolCall = null;
+          // Store tool result message to be added after current run
+          this.toolResultMessages.push({
+            toolCallId: this.pendingToolCall.id,
+            id: this.pendingToolCall.id,
+            role: "tool",
+            content: JSON.stringify(result)
+          });
+          this.pendingToolCall = null;
         }
       },
-      onRunFinishedEvent: ({ event, result }) => {
-        console.log('Agent run finished with result:', result, event)
+      onRunStartedEvent: ({ event }) => {
+        console.log('Run started', event);
       },
-      onRawEvent: async ({ event }) => {
-        console.log('Raw event:', event)
+      onRunFinishedEvent: async ({ result, event }) => {
+        console.log('Run finished', result, event);
+        this.isLoading.set(false);
+        
+        // If we have tool results, add them and run again
+        if (this.toolResultMessages.length > 0) {
+          const toolMessages = [...this.toolResultMessages];
+          this.toolResultMessages = [];
+          this.agent.addMessages(toolMessages);
+          await this.runAgent();
+        } else {
+          this.status.set('Ready to chat');
+        }
       }
-    })
+    });
 
-    const parameters = {
-      tools: [
-        {
-          name: "change_background_color",
-          description: "Change the left panel background color. Can accept solid colors (e.g., '#1e3a8a', 'red') or gradients (e.g., 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)').",
-          parameters: {
-            type: "object",
-            properties: {
-              color: {
-                type: "string",
-                description: "The background color or gradient to apply to the left panel. Can be a hex color, named color, or CSS gradient."
-              }
-            },
-            required: ["color"]
-          }
-        }
-      ]
-    };
-
-    // Run agent (subscriber will be called automatically)
-    agent.addMessages([{ id: "", role: 'user', content: 'Hello! Change the background to blue.' }])
-    const result = await agent.runAgent(parameters);
-    console.log('Initial agent run result:', result)
-
-    if (localToolResultMessages) {
-      console.log('Processing local tool result messages:', localToolResultMessages)
-      agent.addMessages(localToolResultMessages);
-      localToolResultMessages = null;
-      const result2 = await agent.runAgent(parameters);
-      console.log('Second agent run result:', result2);
-    }
-
-    console.log('Agent run completed:', agent.messages);
+    this.agent = agent;
   }
 
-  protected onSubmit(event: Event): void {
+  protected async onSubmit(event: Event): Promise<void> {
     event.preventDefault();
 
     const message = this.inputMessage.trim();
@@ -395,7 +378,42 @@ export class ChatComponent implements OnInit {
 
     this.messages.update(msgs => [...msgs, { role: 'user', content: message }]);
     this.inputMessage = '';
-    this.sendMessage(message);
+    this.scrollToBottom();
+
+    // Add user message to agent and run
+    this.agent.addMessages([{ id: "", role: 'user', content: message }]);
+    await this.runAgent();
+  }
+
+  private async runAgent(): Promise<void> {
+    this.isLoading.set(true);
+    this.status.set('Agent thinking...');
+
+    try {
+      const parameters = { tools: this.tools };
+      await this.agent.runAgent(parameters);
+    } catch (error) {
+      console.error('Error running agent:', error);
+      this.messages.update(msgs => [...msgs, {
+        role: 'assistant',
+        content: 'Sorry, an error occurred. Please try again.'
+      }]);
+      this.status.set('Error occurred');
+      this.isLoading.set(false);
+    }
+  }
+
+  private updateAssistantMessage(content: string): void {
+    this.messages.update(msgs => {
+      const updated = [...msgs];
+      const lastMsg = updated[updated.length - 1];
+      if (lastMsg?.role === 'assistant') {
+        updated[updated.length - 1] = { role: 'assistant', content };
+      } else {
+        updated.push({ role: 'assistant', content });
+      }
+      return updated;
+    });
     this.scrollToBottom();
   }
 
@@ -406,194 +424,6 @@ export class ChatComponent implements OnInit {
         container.scrollTop = container.scrollHeight;
       }
     }, 100);
-  }
-
-  private async sendMessage(message: string): Promise<void> {
-    this.isLoading.set(true);
-    this.status.set('Agent thinking...');
-
-    this.conversationMessages.push({ role: "user", content: message });
-
-    await this.sendToAgent();
-
-    this.isLoading.set(false);
-    this.status.set('Ready to chat');
-    this.scrollToBottom();
-  }
-
-  private async sendToAgent(): Promise<void> {
-    const payload: any = {
-      messages: this.conversationMessages,
-      tools: this.tools
-    };
-
-    if (this.conversationId()) {
-      payload.conversationId = this.conversationId();
-    }
-
-    try {
-      const response = await fetch(`${this.AGENT_URL}`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Accept': 'text/event-stream'
-        },
-        body: JSON.stringify(payload)
-      });
-
-      if (!response.ok) {
-        throw new Error(`HTTP error! status: ${response.status}`);
-      }
-
-      await this.processStream(response);
-    } catch (error) {
-      console.error('Error sending message:', error);
-      this.messages.update(msgs => [...msgs, {
-        role: 'assistant',
-        content: 'Sorry, an error occurred. Please try again.'
-      }]);
-      this.status.set('Error occurred');
-    }
-  }
-
-  private async processStream(response: Response): Promise<void> {
-    const reader = response.body!.getReader();
-    const decoder = new TextDecoder();
-    let currentContent = '';
-    let messageStarted = false;
-
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-
-      const chunk = decoder.decode(value);
-      const lines = chunk.split('\n');
-
-      for (const line of lines) {
-        if (line.startsWith('data: ')) {
-          const data = line.substring(6).trim();
-
-          if (data === '[DONE]') {
-            continue;
-          }
-
-          try {
-            const event = JSON.parse(data);
-
-            if (event.type === 'RUN_STARTED') {
-              if (event.threadId) {
-                this.conversationId.set(event.threadId);
-              }
-              this.status.set('Agent thinking...');
-            } else if (event.type === 'TEXT_MESSAGE_START') {
-              if (!messageStarted) {
-                messageStarted = true;
-                currentContent = '';
-                this.messages.update(msgs => [...msgs, { role: 'assistant', content: '' }]);
-              }
-            } else if (event.type === 'TEXT_MESSAGE_CONTENT') {
-              currentContent += event.delta || '';
-              this.messages.update(msgs => {
-                const updated = [...msgs];
-                if (updated.length > 0 && updated[updated.length - 1].role === 'assistant') {
-                  updated[updated.length - 1] = { role: 'assistant', content: currentContent };
-                }
-                return updated;
-              });
-              this.scrollToBottom();
-            } else if (event.type === 'TEXT_MESSAGE_END') {
-              messageStarted = false;
-              // Add the completed assistant message to conversation history
-              this.conversationMessages.push({
-                role: 'assistant',
-                content: currentContent
-              });
-              this.status.set('Ready to chat');
-            } else if (event.type === 'RUN_FINISHED') {
-              this.status.set('Ready to chat');
-            } else if (event.type === 'RUN_ERROR') {
-              throw new Error(event.message || 'Unknown error occurred');
-            } else if (event.type === 'TOOL_CALL_START') {
-              console.log('Tool call started:', event);
-              this.pendingToolCalls.set(event.toolCallId, {
-                id: event.toolCallId,
-                name: event.toolCallName,
-                args: ''
-              });
-              this.status.set(`Executing ${event.toolCallName}...`);
-            } else if (event.type === 'TOOL_CALL_ARGS') {
-              const toolCall = this.pendingToolCalls.get(event.toolCallId);
-              if (toolCall) {
-                toolCall.args += event.delta || '';
-              }
-            } else if (event.type === 'TOOL_CALL_END') {
-              const toolCall = this.pendingToolCalls.get(event.toolCallId);
-              if (toolCall) {
-                console.log('Tool call ended:', toolCall);
-                const toolMessages = await this.executeToolCall(toolCall.id, toolCall.name, toolCall.args);
-                if (toolMessages.length > 0) {
-                  this.conversationMessages.push(...toolMessages);
-                  this.hasToolCallsInProgress = true;
-                }
-                this.pendingToolCalls.delete(event.toolCallId);
-              }
-            }
-          } catch (e) {
-            console.error('Error parsing SSE data:', e, 'Data:', data);
-          }
-        }
-      }
-    }
-
-    // After stream ends, continue if we just processed tool calls
-    if (this.hasToolCallsInProgress) {
-      this.hasToolCallsInProgress = false;
-      await this.sendToAgent();
-    }
-  }
-
-  private async executeToolCall(toolCallId: string, toolName: string, argsJson: string): Promise<any[]> {
-    let result: string;
-    let error: string | null = null;
-
-    try {
-      const args = argsJson ? JSON.parse(argsJson) : {};
-
-      switch (toolName) {
-        case 'change_background_color':
-          result = this.changeBackgroundColor(args.color || '#1e3a8a');
-          break;
-        default:
-          console.warn(`Unknown tool ${toolName}. Must be a backend tool. Ignoring.`);
-          return [];
-      }
-    } catch (err) {
-      error = String(err);
-      result = `Error: ${err}`;
-      console.error('Error executing tool call:', err);
-    }
-
-    const assistantMessage = {
-      name: null,
-      toolCalls: [{
-        id: toolCallId,
-        type: "function",
-        function: { name: toolName, arguments: argsJson || "{}" }
-      }],
-      id: toolCallId,
-      role: "assistant",
-      content: ""
-    };
-
-    const toolResponse = {
-      toolCallId: toolCallId,
-      error: error,
-      id: toolCallId,
-      role: "tool",
-      content: JSON.stringify(result)
-    };
-
-    return [assistantMessage, toolResponse];
   }
 
   private changeBackgroundColor(color: string): string {
