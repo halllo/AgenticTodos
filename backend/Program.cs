@@ -18,41 +18,38 @@ var app = builder.Build();
 app.MapOpenApi();
 app.MapScalarApiReference();
 app.MapGet("/", () => "Hello World!");
-app.MapAGUI("/agui",
-    //CreateOpenAIAgent(builder)
-    CreateAmazonBedrockAgent(builder)
+app.MapAGUI("/agui", CreateAgent(
+    chatClient:
+        //OpenAI(builder.Configuration)
+        AmazonBedrock(builder.Configuration)
+        ,
+    tools: GetTools(),
+    services: app.Services)
 );
 
 app.Run();
 
 
-static AIAgent CreateOpenAIAgent(WebApplicationBuilder builder)
+static IChatClient OpenAI(IConfiguration configuration)
 {
-    var agent = new OpenAIClient(builder.Configuration["OPENAI_API_KEY"] ?? throw new InvalidOperationException("OPENAI_API_KEY is not set."))
+    return new OpenAIClient(configuration["OPENAI_API_KEY"] ?? throw new InvalidOperationException("OPENAI_API_KEY is not set."))
         .GetChatClient("gpt-4o")
         .AsIChatClient()
-        .CreateAIAgent(
-            name: "AGUIAssistant",
-            tools: [
-                AIFunctionFactory.Create(
-                    method: () => DateTimeOffset.UtcNow,
-                    name: "get_current_time",
-                    description: "Get the current UTC time."
-                )
-            ]);
-
-    return agent;
+        ;
 }
 
-static AIAgent CreateAmazonBedrockAgent(WebApplicationBuilder builder)
+static IChatClient AmazonBedrock(IConfiguration configuration)
 {
     var runtime = new AmazonBedrockRuntimeClient(
-        awsAccessKeyId: builder.Configuration["AWSBedrockAccessKeyId"]!,
-        awsSecretAccessKey: builder.Configuration["AWSBedrockSecretAccessKey"]!,
-        region: Amazon.RegionEndpoint.GetBySystemName(builder.Configuration["AWSBedrockRegion"]!));
+        awsAccessKeyId: configuration["AWSBedrockAccessKeyId"]!,
+        awsSecretAccessKey: configuration["AWSBedrockSecretAccessKey"]!,
+        region: Amazon.RegionEndpoint.GetBySystemName(configuration["AWSBedrockRegion"]!));
 
-    var agent = runtime
-        .AsIChatClient("eu.anthropic.claude-sonnet-4-20250514-v1:0")
+    return runtime
+        .AsIChatClient(defaultModelId:
+        //"eu.anthropic.claude-sonnet-4-20250514-v1:0"
+        "eu.anthropic.claude-sonnet-4-5-20250929-v1:0"
+        )
         .AsBuilder()
         .Use(client => new OmitAdditionalPropertiesMiddleware(
             inner: client,
@@ -64,15 +61,30 @@ static AIAgent CreateAmazonBedrockAgent(WebApplicationBuilder builder)
                 "ag_ui_forwarded_properties"
             ]))
         .Build()
-        .CreateAIAgent(
-            name: "AGUIAssistant",
-            tools: [
-                AIFunctionFactory.Create(
-                    method: () => DateTimeOffset.UtcNow,
-                    name: "get_current_time",
-                    description: "Get the current UTC time."
-                )
-            ]);
+        ;
+}
 
-    return agent;
+static AIAgent CreateAgent(IChatClient chatClient, AIFunction[] tools, IServiceProvider services)
+{
+    return chatClient.CreateAIAgent(
+        name: "AGUIAssistant",
+        tools: tools,
+        services: services);
+}
+
+static AIFunction[] GetTools()
+{
+    return [
+        AIFunctionFactory.Create(
+            method: (IServiceProvider services) => 
+            {
+                var loggerFactory = services.GetRequiredService<ILoggerFactory>(); 
+                var logger = loggerFactory.CreateLogger("GetCurrentTimeFunction");
+                logger.LogInformation("GetCurrentTimeFunction called.");
+                return DateTimeOffset.UtcNow;
+            },
+            name: "get_current_time",
+            description: "Get the current UTC time."
+        )
+    ];
 }
