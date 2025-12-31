@@ -18,14 +18,14 @@ var app = builder.Build();
 app.MapOpenApi();
 app.MapScalarApiReference();
 app.MapGet("/", () => "Hello World!");
-app.MapAGUI("/agui", CreateAgent(
-    chatClient:
-        //OpenAI(builder.Configuration)
-        AmazonBedrock(builder.Configuration)
-        ,
+app.MapAGUI("/openai/agui", CreateAgent(
+    chatClient: OpenAI(builder.Configuration),
     tools: GetTools(),
-    services: app.Services)
-);
+    services: app.Services));
+app.MapAGUI("/amazonbedrock/agui", CreateAgent(
+    chatClient: AmazonBedrock(builder.Configuration),
+    tools: GetTools(),
+    services: app.Services));
 
 app.Run();
 
@@ -51,6 +51,10 @@ static IChatClient AmazonBedrock(IConfiguration configuration)
         "eu.anthropic.claude-sonnet-4-5-20250929-v1:0"
         )
         .AsBuilder()
+        // .ConfigureOptions(c =>
+        // {
+        //     c.AllowMultipleToolCalls = false; // does not seem to have any effect
+        // })
         .Use(client => new OmitAdditionalPropertiesMiddleware(
             inner: client,
             propertyKeysToOmit: [ //prevent the "Extra inputs are not permitted" error

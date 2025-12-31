@@ -7,7 +7,7 @@ using AgenticTodos.Backend;
 
 namespace AgenticTodos.Tests;
 
-public class AmazonBedrockTest(ITestOutputHelper output)
+public class AmazonBedrockFieldsTest(ITestOutputHelper output)
 {
     [Fact]
     public async Task WithoutAdditionalModelRequestFields()

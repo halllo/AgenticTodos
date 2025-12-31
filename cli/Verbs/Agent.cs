@@ -16,7 +16,10 @@ namespace AgenticTodos.Backend.Cli.Verbs
         public async Task Do(ILogger<Agent> logger)
         {
             var cancellationToken = CancellationToken.None;
-            var serverUrl = "http://localhost:5288/agui";
+            var serverUrl = 
+                "http://localhost:5288/amazonbedrock/agui"
+                //"http://localhost:5288/openai/agui"
+                ;
             logger.LogInformation("Connecting to AG-UI server at: {ServerUrl}", serverUrl);
 
             // Create the AG-UI client agent

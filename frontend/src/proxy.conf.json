@@ -1,6 +1,10 @@
 {
-  "/agui": {
-  "target": "http://localhost:5288",
-  "secure": false
+  "/openai/agui": {
+    "target": "http://localhost:5288",
+    "secure": false
+  },
+  "/amazonbedrock/agui": {
+    "target": "http://localhost:5288",
+    "secure": false
   }
 }

@@ -1,15 +1,25 @@
 import { ChangeDetectionStrategy, Component, ElementRef, OnInit, output, signal, viewChild } from '@angular/core';
 import { FormsModule } from '@angular/forms';
-import { AgentSubscriber, HttpAgent, Message as Message } from "@ag-ui/client"
+import { HttpAgent, Message as Message } from "@ag-ui/client"
+import { Field, form, required } from '@angular/forms/signals';
 
-interface UIMessage {
-  role: 'user' | 'assistant';
+interface NewMessageViewModel {
   content: string;
+}
+
+interface MessageViewModel {
+  role: 'user' | 'assistant' | 'tool';
+  content: string;
+  toolName?: string;
+  toolCallId?: string;
+  isGenerating?: boolean;
+  error?: boolean;
 }
 
 @Component({
   selector: 'app-chat',
-  imports: [FormsModule],
+  imports: [Field],
+  changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <div class="chat-container">
       <header class="chat-header">
@@ -27,11 +37,26 @@ interface UIMessage {
         }
         
         @for (message of messages(); track $index) {
-          <div class="message" [class.user]="message.role === 'user'" [class.assistant]="message.role === 'assistant'">
+          <div class="message" 
+            [class.user]="message.role === 'user'" 
+            [class.assistant]="message.role === 'assistant'" 
+            [class.tool]="message.role === 'tool'"
+            [class.error]="message.error"
+          >
             <div class="message-avatar">
-              {{ message.role === 'user' ? '👤' : '🤖' }}
+              @if (message.role === 'user') {
+                👤
+              } @else if (message.role === 'assistant') {
+                🤖
+              } @else if (message.role === 'tool') {
+                🛠️
+              }
             </div>
             <div class="message-content">
+              @if (message.role === 'tool' && message.toolName) {
+                <span class="tool-indicator">{{ message.toolName }}</span>
+                <br>
+              }
               {{ message.content }}
             </div>
           </div>
@@ -52,19 +77,8 @@ interface UIMessage {
       </div>
 
       <form class="input-container" (submit)="onSubmit($event)">
-        <input 
-          type="text" 
-          [(ngModel)]="inputMessage"
-          name="message"
-          placeholder="Type your message..."
-          [disabled]="isLoading()"
-          class="message-input"
-        />
-        <button 
-          type="submit" 
-          [disabled]="isLoading() || !inputMessage.trim()"
-          class="send-button"
-        >
+        <input type="text" [field]="newMessageForm.content" placeholder="Type your message..." class="message-input"/>
+        <button type="submit" class="send-button" [disabled]="isLoading()">
           Send
         </button>
       </form>
@@ -137,7 +151,7 @@ interface UIMessage {
         .message-content {
           background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
           color: white;
-          border-radius: 18px 18px 4px 18px;
+          border-radius: 18px 4px 18px 18px;
         }
       }
 
@@ -145,8 +159,15 @@ interface UIMessage {
         .message-content {
           background: white;
           color: #333;
-          border-radius: 18px 18px 18px 4px;
+          border-radius: 4px 18px 18px 18px;
           box-shadow: 0 1px 2px rgba(0,0,0,0.1);
+        }
+      }
+
+      &.error {
+        .message-content {
+          background: #ffebee !important;
+          color: #c62828 !important;
         }
       }
 
@@ -264,21 +285,41 @@ interface UIMessage {
         }
       }
     }
+
+    .message.tool {
+      .message-content {
+        background: #e0f7fa;
+        color: #00796b;
+        border-radius: 4px 8px 18px 18px;
+        box-shadow: 0 1px 2px rgba(0,0,0,0.08);
+      }
+      .message-avatar {
+        background: #e0f7fa;
+        color: #00796b;
+      }
+    }
+
+    .tool-indicator {
+      font-size: 0.85em;
+      margin-right: 0.5em;
+      color: #00796b;
+    }
   `,
-  changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export class ChatComponent implements OnInit {
-  protected readonly AGENT_URL = '/agui';
-  protected readonly messages = signal<UIMessage[]>([]);
+  protected readonly newMessageViewModel = signal<NewMessageViewModel>({ content: '' });
+  protected readonly newMessageForm = form(this.newMessageViewModel, schemaPath => {
+    required(schemaPath.content);
+  });
+  protected readonly messages = signal<MessageViewModel[]>([]);
   protected readonly status = signal('Ready to chat');
   protected readonly isLoading = signal(false);
-  protected inputMessage = '';
 
-  readonly backgroundColorChange = output<string>();
+  protected readonly backgroundColorChange = output<string>();
 
   private readonly messagesContainer = viewChild<ElementRef>('messagesContainer');
   private agent!: HttpAgent;
-  private pendingToolCall: { id: string, name: string, args: string } | null = null;
+  private pendingFrontendToolCalls: Array<{ id: string, name: string, args: string }> = [];
   private toolResultMessages: Message[] = [];
   private readonly tools = [
     {
@@ -306,57 +347,108 @@ export class ChatComponent implements OnInit {
       throw new Error('Agent is already initialized.');
     }
 
-    const agent = new HttpAgent({ url: this.AGENT_URL });
+    const agent = new HttpAgent({ url: '/amazonbedrock/agui' });
     agent.subscribe({
+      onTextMessageStartEvent: ({ event }) => {
+        console.log('Text message started:', event);
+        this.status.set('Assistant is typing...');
+        this.messages.update(msgs => ([...msgs, { role: 'assistant', content: '', isGenerating: true }]));
+      },
       onTextMessageContentEvent: ({ textMessageBuffer }) => {
-        this.updateAssistantMessage(textMessageBuffer);
+        this.updateLastAssistantMessage(
+          msg => ({ ...msg, content: textMessageBuffer }),
+          { role: 'assistant', content: textMessageBuffer }
+        );
       },
       onTextMessageEndEvent: async ({ textMessageBuffer }) => {
         console.log('Text message ended:', textMessageBuffer);
-        this.updateAssistantMessage(textMessageBuffer);
+        this.updateLastAssistantMessage(
+          msg => ({ ...msg, content: textMessageBuffer, isGenerating: false }),
+          { role: 'assistant', content: textMessageBuffer, isGenerating: false }
+        );
         this.status.set('Ready to chat');
       },
       onToolCallStartEvent: ({ event }) => {
+        // Add a tool message to the chat for any tool call (local or backend)
+        this.messages.update(msgs => [
+          ...msgs,
+          {
+            role: 'tool',
+            content: '',
+            toolName: event.toolCallName,
+            toolCallId: event.toolCallId
+          }
+        ]);
+        // If it's a frontend tool, collect for batch execution
         if (event.toolCallName === "change_background_color") {
-          this.pendingToolCall = { id: event.toolCallId, name: event.toolCallName, args: '' };
+          this.pendingFrontendToolCalls.push({ id: event.toolCallId, name: event.toolCallName, args: '' });
           this.status.set(`Executing ${event.toolCallName}...`);
         }
       },
       onToolCallArgsEvent: ({ event }) => {
-        if (this.pendingToolCall?.id === event.toolCallId) {
-          this.pendingToolCall.args += event.delta || '';
+        // Find the matching pending frontend tool call and append args
+        const call = this.pendingFrontendToolCalls.find(tc => tc.id === event.toolCallId);
+        if (call) {
+          call.args += event.delta || '';
         }
       },
       onToolCallEndEvent: async ({ toolCallName, toolCallArgs, event }) => {
         console.log('Tool call', toolCallName, toolCallArgs, event);
-        if (this.pendingToolCall?.id === event.toolCallId) {
-          console.log('Local tool call', toolCallName);
-          const args = this.pendingToolCall.args ? JSON.parse(this.pendingToolCall.args) : {};
-          
-          // Execute the tool locally (TODO, figure our the correct tool)
-          const result = this.changeBackgroundColor(args.color || '#1e3a8a');
-
-          // Store tool result message to be added after current run
-          this.toolResultMessages.push({
-            toolCallId: this.pendingToolCall.id,
-            id: this.pendingToolCall.id,
-            role: "tool",
-            content: JSON.stringify(result)
-          });
-          this.pendingToolCall = null;
-        }
+        this.messages.update(msgs => {
+          return msgs.map(msg =>
+            msg.toolCallId === event.toolCallId
+              ? { ...msg, toolName: `${msg.toolName}(${toolCallArgs ? JSON.stringify(toolCallArgs) : ''})` }
+              : msg
+          );
+        });
+        // Do not execute tool here; wait until run finishes
+      },
+      onToolCallResultEvent: async ({ event }) => {
+        console.log('Tool call result', event);
       },
       onRunStartedEvent: ({ event }) => {
         console.log('Run started', event);
       },
+      onRunErrorEvent: ({ event }) => {
+        console.error('Run error', event);
+        this.isLoading.set(false);
+        this.messages.update(msgs => {
+          const last = msgs.at(-1);
+          return last?.role === 'assistant'
+            ? [...msgs.slice(0, -1), { ...last, content: event.message, isGenerating: false, error: true }]
+            : [...msgs, { role: 'assistant', content: event.message, isGenerating: false, error: true }];
+        });
+        this.status.set('Error occurred');
+      },
       onRunFinishedEvent: async ({ result, event }) => {
         console.log('Run finished', result, event);
         this.isLoading.set(false);
-        
-        // If we have tool results, add them and run again
-        if (this.toolResultMessages.length > 0) {
-          const toolMessages = [...this.toolResultMessages];
-          this.toolResultMessages = [];
+
+        // Batch execute all pending frontend tool calls
+        if (this.pendingFrontendToolCalls.length > 0) {
+          const toolMessages: Message[] = [];
+          for (const call of this.pendingFrontendToolCalls) {
+            let result: string = '';
+            if (call.name === "change_background_color") {
+              const args = call.args ? JSON.parse(call.args) : {};
+              result = JSON.stringify(this.changeBackgroundColor(args.color || '#1e3a8a'));
+            }
+            // Update the tool message with the result
+            this.messages.update(msgs => {
+              return msgs.map(msg =>
+                msg.toolCallId === call.id
+                  ? { ...msg, content: result }
+                  : msg
+              );
+            });
+            toolMessages.push({
+              id: call.id,
+              role: "tool",
+              content: result,
+              toolCallId: call.id,
+            });
+          }
+          this.pendingFrontendToolCalls = [];
           this.agent.addMessages(toolMessages);
           await this.runAgent();
         } else {
@@ -371,17 +463,16 @@ export class ChatComponent implements OnInit {
   protected async onSubmit(event: Event): Promise<void> {
     event.preventDefault();
 
-    const message = this.inputMessage.trim();
-    if (!message || this.isLoading()) {
+    const newMessage = this.newMessageViewModel().content.trim();
+    if (!newMessage || this.isLoading()) {
       return;
     }
 
-    this.messages.update(msgs => [...msgs, { role: 'user', content: message }]);
-    this.inputMessage = '';
+    this.newMessageViewModel.update(vm => ({ ...vm, content: '' }));
+    this.messages.update(msgs => [...msgs, { role: 'user', content: newMessage }]);
+    this.agent.addMessages([{ id: "", role: 'user', content: newMessage }]);
     this.scrollToBottom();
 
-    // Add user message to agent and run
-    this.agent.addMessages([{ id: "", role: 'user', content: message }]);
     await this.runAgent();
   }
 
@@ -403,18 +494,24 @@ export class ChatComponent implements OnInit {
     }
   }
 
-  private updateAssistantMessage(content: string): void {
+  private updateLastAssistantMessage(updateFn: (msg: MessageViewModel) => MessageViewModel, fallback: MessageViewModel): void {
     this.messages.update(msgs => {
-      const updated = [...msgs];
-      const lastMsg = updated[updated.length - 1];
-      if (lastMsg?.role === 'assistant') {
-        updated[updated.length - 1] = { role: 'assistant', content };
-      } else {
-        updated.push({ role: 'assistant', content });
-      }
-      return updated;
+      const lastIdx = msgs
+        .slice()
+        .map((v, i) => ({ v, i }))
+        .reverse()
+        .filter(({ v }) => v.role === 'assistant' && v.isGenerating)
+        .map(({ i }) => i)
+        .at(0)
+        ;
+      return lastIdx === undefined
+        ? [...msgs, fallback]
+        : [
+          ...msgs.slice(0, lastIdx),
+          updateFn(msgs[lastIdx]),
+          ...msgs.slice(lastIdx + 1)
+        ];
     });
-    this.scrollToBottom();
   }
 
   private scrollToBottom(): void {
