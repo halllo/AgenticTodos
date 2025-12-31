@@ -55,15 +55,16 @@ static IChatClient AmazonBedrock(IConfiguration configuration)
         // {
         //     c.AllowMultipleToolCalls = false; // does not seem to have any effect
         // })
-        .Use(client => new OmitAdditionalPropertiesMiddleware(
-            inner: client,
-            propertyKeysToOmit: [ //prevent the "Extra inputs are not permitted" error
-                "ag_ui_thread_id",
-                "ag_ui_run_id",
-                "ag_ui_state",
-                "ag_ui_context",
-                "ag_ui_forwarded_properties"
-            ]))
+        .Use(client => new MergeToolResultsMiddleware(
+            inner: new OmitAdditionalPropertiesMiddleware(
+                inner: client,
+                propertyKeysToOmit: [ //prevent the "Extra inputs are not permitted" error
+                    "ag_ui_thread_id",
+                    "ag_ui_run_id",
+                    "ag_ui_state",
+                    "ag_ui_context",
+                    "ag_ui_forwarded_properties"
+                ])))
         .Build()
         ;
 }
