@@ -23,7 +23,7 @@ type Todo = {
             (keydown.enter)="addTodo()"
             aria-label="New todo"
           />
-          <button class="todo__add" type="button" (click)="addTodo()" aria-label="Add todo">➕</button>
+          <button class="todo__add" type="button" (click)="addTodo()" aria-label="Add todo">Add</button>
         </div>
       </header>
 

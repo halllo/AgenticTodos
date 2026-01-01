@@ -66,6 +66,7 @@ static IChatClient AmazonBedrock(IConfiguration configuration, IServiceProvider 
                 "ag_ui_context",
                 "ag_ui_forwarded_properties"
             ]))
+        .Use((client, services) => new ConsolidateToolResultsMiddleware(inner: client))
         .Use((client, services) => new LoggingMiddleware(inner: client, logger: services.GetRequiredService<ILogger<LoggingMiddleware>>()))
         .Build(services)
         ;
