@@ -11,7 +11,7 @@ type Todo = {
   template: `
     <section class="todo">
       <header class="todo__header">
-        <h1 class="todo__title">Agentic Todos</h1>
+        <h1 class="todo__title">{{ remainingCount() > 0 ? remainingCount() : '' }} Todos</h1>
 
         <div class="todo__inputRow">
           <input
@@ -25,17 +25,11 @@ type Todo = {
           />
           <button class="todo__add" type="button" (click)="addTodo()" aria-label="Add todo">➕</button>
         </div>
-
-        @if (remainingCount() !== totalCount()) {
-          <div class="todo__meta">{{ remainingCount() }} remaining</div>
-        } @else {
-          <div class="todo__meta">{{ totalCount() }} total</div>
-        }
       </header>
 
       <div class="todo__list" role="list">
         @if (todos().length === 0) {
-          <div class="todo__empty">No todos yet.</div>
+          <div class="todo__empty">Nothing to do.</div>
         } @else {
           @for (todo of todos(); track todo.id) {
             <div class="todo__item" role="listitem">
@@ -201,8 +195,6 @@ type Todo = {
 export class TodosComponent {
   protected readonly newTodoTitle = signal('');
   protected readonly todos = signal<Todo[]>([]);
-
-  protected readonly totalCount = computed(() => this.todos().length);
   protected readonly remainingCount = computed(() => this.todos().filter((t) => !t.completed).length);
 
   protected onTitleInput(event: Event): void {
@@ -210,18 +202,26 @@ export class TodosComponent {
     this.newTodoTitle.set(value);
   }
 
+  public addTodoWithTitle(title: string): void {
+    this.prependTodo(title);
+  }
+
   protected addTodo(): void {
-    const title = this.newTodoTitle().trim();
-    if (!title) return;
+    this.prependTodo(this.newTodoTitle());
+    this.newTodoTitle.set('');
+  }
+
+  private prependTodo(title: string): void {
+    const trimmed = title.trim();
+    if (!trimmed) return;
 
     const todo: Todo = {
       id: globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(16).slice(2)}`,
-      title,
+      title: trimmed,
       completed: false,
     };
 
     this.todos.update((todos) => [todo, ...todos]);
-    this.newTodoTitle.set('');
   }
 
   protected toggleTodo(id: string): void {

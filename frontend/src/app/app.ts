@@ -9,11 +9,13 @@ import { TodosComponent } from './todos.component';
   template: `
     <div class="app">
       <div class="app__leftPanel" [style.background]="leftPanelBackground()">
-        <app-todos />
+        <app-todos #todos />
       </div>
-
       <div class="app__rightPanel">
-        <app-chat (backgroundColorChange)="onBackgroundColorChange($event)" />
+        <app-chat
+          (backgroundColorChange)="this.leftPanelBackground.set($event)"
+          (todoAdd)="todos.addTodoWithTitle($event)"
+        />
       </div>
     </div>
     <router-outlet />
@@ -67,8 +69,4 @@ import { TodosComponent } from './todos.component';
 })
 export class App {
   protected readonly leftPanelBackground = signal('var(--brand-gradient)');
-
-  protected onBackgroundColorChange(color: string): void {
-    this.leftPanelBackground.set(color);
-  }
 }

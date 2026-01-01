@@ -328,6 +328,7 @@ export class ChatComponent implements OnInit {
   protected readonly isLoading = signal(false);
 
   protected readonly backgroundColorChange = output<string>();
+  protected readonly todoAdd = output<string>();
 
   private readonly messagesContainer = viewChild<ElementRef>('messagesContainer');
   private agent!: HttpAgent;
@@ -345,6 +346,20 @@ export class ChatComponent implements OnInit {
           }
         },
         required: ["color"]
+      }
+    },
+    {
+      name: "add_todo",
+      description: "Add a todo to the todo list in the left panel.",
+      parameters: {
+        type: "object",
+        properties: {
+          title: {
+            type: "string",
+            description: "The todo title text."
+          }
+        },
+        required: ["title"]
       }
     }
   ];
@@ -391,7 +406,7 @@ export class ChatComponent implements OnInit {
           }
         ]);
         // If it's a frontend tool, collect for batch execution
-        if (event.toolCallName === "change_background_color") {
+        if (event.toolCallName === "change_background_color" || event.toolCallName === "add_todo") {
           this.pendingFrontendToolCalls.push({ id: event.toolCallId, name: event.toolCallName, args: '' });
           this.status.set(`Executing ${event.toolCallName}...`);
         }
@@ -450,11 +465,26 @@ export class ChatComponent implements OnInit {
         if (this.pendingFrontendToolCalls.length > 0) {
           const toolMessages: Message[] = [];
           for (const call of this.pendingFrontendToolCalls) {
+            let parsedArgs: unknown = {};
+            try {
+              parsedArgs = call.args ? JSON.parse(call.args) : {};
+            } catch {
+              parsedArgs = {};
+            }
+            
             let result: string = '';
             if (call.name === "change_background_color") {
-              const args = call.args ? JSON.parse(call.args) : {};
-              result = JSON.stringify(this.changeBackgroundColor(args.color || '#1e3a8a'));
+              const args = parsedArgs as { color?: unknown };
+              const color = typeof args.color === 'string' ? args.color : '#1e3a8a';
+              result = JSON.stringify(this.changeBackgroundColor(color));
+            } else if (call.name === "add_todo") {
+              const args = parsedArgs as { title?: unknown };
+              const title = typeof args.title === 'string' ? args.title : '';
+              result = JSON.stringify(this.addTodo(title));
+            } else {
+              result = JSON.stringify('Error: Unknown frontend tool.');
             }
+
             // Update the tool message with the result
             this.messages.update(msgs => {
               return msgs.map(msg =>
@@ -572,5 +602,15 @@ export class ChatComponent implements OnInit {
     this.backgroundColorChange.emit(color);
     console.log('Left panel background color changed to:', color);
     return "Success: Function completed.";
+  }
+
+  private addTodo(title: string): string {
+    const trimmed = title.trim();
+    if (!trimmed) {
+      return 'Error: Missing todo title.';
+    }
+
+    this.todoAdd.emit(trimmed);
+    return 'Success: Todo added.';
   }
 }
