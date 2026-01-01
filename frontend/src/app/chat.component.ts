@@ -1,5 +1,4 @@
 import { ChangeDetectionStrategy, Component, ElementRef, OnInit, output, signal, viewChild } from '@angular/core';
-import { FormsModule } from '@angular/forms';
 import { HttpAgent, Message as Message } from "@ag-ui/client"
 import { Field, form, required } from '@angular/forms/signals';
 
@@ -52,7 +51,9 @@ interface MessageViewModel {
                 🛠️
               }
             </div>
-            <div class="message-content">
+            <div class="message-content"
+              [class.generating]="message.isGenerating" 
+            >
               @if (message.role === 'tool' && message.toolName) {
                 <span class="tool-indicator">{{ message.toolName }}</span>
                 <br>
@@ -78,9 +79,11 @@ interface MessageViewModel {
 
       <form class="input-container" (submit)="onSubmit($event)">
         <input type="text" [field]="newMessageForm.content" placeholder="Type your message..." class="message-input"/>
-        <button type="submit" class="send-button" [disabled]="isLoading()">
-          Send
-        </button>
+        @if (isLoading()) {
+          <button type="button" class="send-button" (click)="cancelRun()">✋ Stop</button>
+        } @else {
+          <button type="submit" class="send-button">Send</button>
+        }
       </form>
     </div>
   `,
@@ -161,6 +164,10 @@ interface MessageViewModel {
           color: #333;
           border-radius: 4px 18px 18px 18px;
           box-shadow: 0 1px 2px rgba(0,0,0,0.1);
+
+          &.generating {
+            opacity: 0.7;
+          }
         }
       }
 
@@ -320,7 +327,6 @@ export class ChatComponent implements OnInit {
   private readonly messagesContainer = viewChild<ElementRef>('messagesContainer');
   private agent!: HttpAgent;
   private pendingFrontendToolCalls: Array<{ id: string, name: string, args: string }> = [];
-  private toolResultMessages: Message[] = [];
   private readonly tools = [
     {
       name: "change_background_color",
@@ -410,15 +416,26 @@ export class ChatComponent implements OnInit {
         console.log('Run started', event);
       },
       onRunErrorEvent: ({ event }) => {
-        console.error('Run error', event);
         this.isLoading.set(false);
-        this.messages.update(msgs => {
-          const last = msgs.at(-1);
-          return last?.role === 'assistant'
-            ? [...msgs.slice(0, -1), { ...last, content: event.message, isGenerating: false, error: true }]
-            : [...msgs, { role: 'assistant', content: event.message, isGenerating: false, error: true }];
-        });
-        this.status.set('Error occurred');
+        if (this.isAbortError(event.rawEvent)) {
+          console.log('Run cancelled', event);
+          this.status.set('Cancelled');
+          this.messages.update(msgs => {
+            const last = msgs.at(-1);
+            return last?.role === 'assistant'
+              ? [...msgs.slice(0, -1), { ...last, content: last.content + '✋', isGenerating: false }]
+              : [...msgs, { role: 'assistant', content: '✋', isGenerating: false }];
+          });
+        } else {
+          console.error('Run error', event);
+          this.status.set('Error occurred');
+          this.messages.update(msgs => {
+            const last = msgs.at(-1);
+            return last?.role === 'assistant'
+              ? [...msgs.slice(0, -1), { ...last, content: event.message, isGenerating: false, error: true }]
+              : [...msgs, { role: 'assistant', content: event.message, isGenerating: false, error: true }];
+          });
+        }
       },
       onRunFinishedEvent: async ({ result, event }) => {
         console.log('Run finished', result, event);
@@ -492,6 +509,29 @@ export class ChatComponent implements OnInit {
       this.status.set('Error occurred');
       this.isLoading.set(false);
     }
+  }
+
+  protected cancelRun(): void {
+    if (!this.isLoading() || !this.agent) {
+      return;
+    }
+
+    try {
+      this.status.set('Canceling...');
+      this.agent.abortRun();
+    } catch (error) {
+      console.error('Error aborting agent run:', error);
+    }
+  }
+
+  private isAbortError(error: unknown): boolean {
+    if (error && typeof error === 'object') {
+      const anyError = error as { name?: unknown; message?: unknown };
+      const name = typeof anyError.name === 'string' ? anyError.name : '';
+      const message = typeof anyError.message === 'string' ? anyError.message : '';
+      return name === 'AbortError';
+    }
+    return false;
   }
 
   private updateLastAssistantMessage(updateFn: (msg: MessageViewModel) => MessageViewModel, fallback: MessageViewModel): void {

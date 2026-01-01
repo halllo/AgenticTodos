@@ -18,13 +18,15 @@ var app = builder.Build();
 app.MapOpenApi();
 app.MapScalarApiReference();
 app.MapGet("/", () => "Hello World!");
+
+var tools = GetTools();
 app.MapAGUI("/openai/agui", CreateAgent(
     chatClient: OpenAI(builder.Configuration),
-    tools: GetTools(),
+    tools: tools,
     services: app.Services));
 app.MapAGUI("/amazonbedrock/agui", CreateAgent(
-    chatClient: AmazonBedrock(builder.Configuration),
-    tools: GetTools(),
+    chatClient: AmazonBedrock(builder.Configuration, app.Services),
+    tools: tools,
     services: app.Services));
 
 app.Run();
@@ -38,7 +40,7 @@ static IChatClient OpenAI(IConfiguration configuration)
         ;
 }
 
-static IChatClient AmazonBedrock(IConfiguration configuration)
+static IChatClient AmazonBedrock(IConfiguration configuration, IServiceProvider services)
 {
     var runtime = new AmazonBedrockRuntimeClient(
         awsAccessKeyId: configuration["AWSBedrockAccessKeyId"]!,
@@ -64,7 +66,8 @@ static IChatClient AmazonBedrock(IConfiguration configuration)
                 "ag_ui_context",
                 "ag_ui_forwarded_properties"
             ]))
-        .Build()
+        .Use((client, services) => new LoggingMiddleware(inner: client, logger: services.GetRequiredService<ILogger<LoggingMiddleware>>()))
+        .Build(services)
         ;
 }
 
