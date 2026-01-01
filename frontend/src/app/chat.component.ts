@@ -20,29 +20,30 @@ interface MessageViewModel {
   imports: [Field],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
-    <div class="chat-container">
-      <header class="chat-header">
+    <div class="chat">
+      <header class="chat__header">
         <h1>Assistant</h1>
-        <div class="status" [class.active]="!isLoading()">
+        <div class="chat__status" [class.chat__status--active]="!isLoading()">
           {{ status() }}
         </div>
       </header>
 
-      <div class="messages-container" #messagesContainer>
+      <div class="chat__messages" #messagesContainer>
         @if (messages().length === 0) {
-          <div class="empty-state">
+          <div class="chat__empty">
             <p>Start a conversation with your AI assistant</p>
           </div>
         }
         
         @for (message of messages(); track $index) {
-          <div class="message" 
-            [class.user]="message.role === 'user'" 
-            [class.assistant]="message.role === 'assistant'" 
-            [class.tool]="message.role === 'tool'"
-            [class.error]="message.error"
+          <div
+            class="chat__message"
+            [class.chat__message--user]="message.role === 'user'"
+            [class.chat__message--assistant]="message.role === 'assistant'"
+            [class.chat__message--tool]="message.role === 'tool'"
+            [class.chat__message--error]="message.error"
           >
-            <div class="message-avatar">
+            <div class="chat__avatar">
               @if (message.role === 'user') {
                 👤
               } @else if (message.role === 'assistant') {
@@ -51,11 +52,9 @@ interface MessageViewModel {
                 🛠️
               }
             </div>
-            <div class="message-content"
-              [class.generating]="message.isGenerating" 
-            >
+            <div class="chat__content" [class.chat__content--generating]="message.isGenerating">
               @if (message.role === 'tool' && message.toolName) {
-                <span class="tool-indicator">{{ message.toolName }}</span>
+                <span class="chat__toolIndicator">{{ message.toolName }}</span>
                 <br>
               }
               {{ message.content }}
@@ -64,10 +63,10 @@ interface MessageViewModel {
         }
 
         @if (isLoading()) {
-          <div class="message assistant">
-            <div class="message-avatar">🤖</div>
-            <div class="message-content">
-              <div class="typing-indicator">
+          <div class="chat__message chat__message--assistant">
+            <div class="chat__avatar">🤖</div>
+            <div class="chat__content">
+              <div class="chat__typing">
                 <span></span>
                 <span></span>
                 <span></span>
@@ -77,34 +76,39 @@ interface MessageViewModel {
         }
       </div>
 
-      <form class="input-container" (submit)="onSubmit($event)">
-        <input type="text" [field]="newMessageForm.content" placeholder="Type your message..." class="message-input"/>
+      <form class="chat__inputRow" (submit)="onSubmit($event)">
+        <input type="text" [field]="newMessageForm.content" placeholder="Type your message..." class="chat__input"/>
         @if (isLoading()) {
-          <button type="button" class="send-button" (click)="cancelRun()">✋ Stop</button>
+          <button type="button" class="chat__send" (click)="cancelRun()">✋ Stop</button>
         } @else {
-          <button type="submit" class="send-button">Send</button>
+          <button type="submit" class="chat__send">Send</button>
         }
       </form>
     </div>
   `,
   styles: `
     :host {
-      flex: 1;
+      display: block;
+      height: 100%;
+      width: 100%;
     }
 
-    .chat-container {
+    .chat {
       display: flex;
       flex-direction: column;
       height: 100%;
-      background: #fff;
+      width: 100%;
+      min-height: 0;
+      min-width: 0;
+      background: var(--surface);
     }
 
-    .chat-header {
+    .chat__header {
       display: flex;
       justify-content: space-between;
       align-items: center;
       padding: 1rem 1.5rem;
-      background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+      background: var(--brand-gradient);
       color: white;
       box-shadow: 0 2px 4px rgba(0,0,0,0.1);
 
@@ -114,71 +118,72 @@ interface MessageViewModel {
         font-weight: 600;
       }
 
-      .status {
+      .chat__status {
         font-size: 0.875rem;
         padding: 0.5rem 1rem;
         border-radius: 20px;
         background: rgba(255, 255, 255, 0.2);
         
-        &.active {
+        &.chat__status--active {
           background: rgba(76, 175, 80, 0.3);
         }
       }
     }
 
-    .messages-container {
+    .chat__messages {
       flex: 1;
+      min-height: 0;
       overflow-y: auto;
       padding: 1.5rem;
-      background: #f5f5f5;
+      background: var(--surface-muted);
 
-      .empty-state {
+      .chat__empty {
         display: flex;
         align-items: center;
         justify-content: center;
         height: 100%;
-        color: #999;
+        color: var(--text-muted);
         font-size: 1.125rem;
       }
     }
 
-    .message {
+    .chat__message {
       display: flex;
       gap: 0.75rem;
       margin-bottom: 1.5rem;
       animation: slideIn 0.3s ease-out;
 
-      &.user {
+      &.chat__message--user {
         flex-direction: row-reverse;
 
-        .message-content {
-          background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        .chat__content {
+          background: var(--brand-gradient);
           color: white;
           border-radius: 18px 4px 18px 18px;
         }
       }
 
-      &.assistant {
-        .message-content {
-          background: white;
-          color: #333;
+      &.chat__message--assistant {
+        .chat__content {
+          background: var(--surface);
+          color: var(--text);
           border-radius: 4px 18px 18px 18px;
           box-shadow: 0 1px 2px rgba(0,0,0,0.1);
 
-          &.generating {
+          &.chat__content--generating {
             opacity: 0.7;
           }
         }
       }
 
-      &.error {
-        .message-content {
+      &.chat__message--error {
+        .chat__content {
           background: #ffebee !important;
           color: #c62828 !important;
         }
       }
 
-      .message-avatar {
+      .chat__avatar {
         width: 40px;
         height: 40px;
         border-radius: 50%;
@@ -187,11 +192,11 @@ interface MessageViewModel {
         justify-content: center;
         font-size: 1.5rem;
         flex-shrink: 0;
-        background: white;
+        background: var(--surface);
         box-shadow: 0 2px 4px rgba(0,0,0,0.1);
       }
 
-      .message-content {
+      .chat__content {
         max-width: 70%;
         padding: 0.875rem 1.125rem;
         line-height: 1.5;
@@ -199,7 +204,7 @@ interface MessageViewModel {
       }
     }
 
-    .typing-indicator {
+    .chat__typing {
       display: flex;
       gap: 4px;
       padding: 4px 0;
@@ -208,7 +213,7 @@ interface MessageViewModel {
         width: 8px;
         height: 8px;
         border-radius: 50%;
-        background: #999;
+        background: var(--text-muted);
         animation: bounce 1.4s infinite ease-in-out both;
 
         &:nth-child(1) {
@@ -241,24 +246,24 @@ interface MessageViewModel {
       }
     }
 
-    .input-container {
+    .chat__inputRow {
       display: flex;
       gap: 0.75rem;
       padding: 1rem 1.5rem;
-      background: white;
-      border-top: 1px solid #e0e0e0;
+      background: var(--surface);
+      border-top: 1px solid var(--border);
 
-      .message-input {
+      .chat__input {
         flex: 1;
         padding: 0.875rem 1.125rem;
-        border: 2px solid #e0e0e0;
-        border-radius: 24px;
+        border: 2px solid var(--border);
+        border-radius: var(--radius-lg);
         font-size: 1rem;
         outline: none;
         transition: border-color 0.2s;
 
         &:focus {
-          border-color: #667eea;
+          border-color: var(--brand-primary);
         }
 
         &:disabled {
@@ -267,12 +272,12 @@ interface MessageViewModel {
         }
       }
 
-      .send-button {
+      .chat__send {
         padding: 0.875rem 2rem;
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+        background: var(--brand-gradient);
         color: white;
         border: none;
-        border-radius: 24px;
+        border-radius: var(--radius-lg);
         font-size: 1rem;
         font-weight: 600;
         cursor: pointer;
@@ -293,20 +298,20 @@ interface MessageViewModel {
       }
     }
 
-    .message.tool {
-      .message-content {
+    .chat__message.chat__message--tool {
+      .chat__content {
         background: #e0f7fa;
         color: #00796b;
         border-radius: 4px 8px 18px 18px;
         box-shadow: 0 1px 2px rgba(0,0,0,0.08);
       }
-      .message-avatar {
+      .chat__avatar {
         background: #e0f7fa;
         color: #00796b;
       }
     }
 
-    .tool-indicator {
+    .chat__toolIndicator {
       font-size: 0.85em;
       margin-right: 0.5em;
       color: #00796b;

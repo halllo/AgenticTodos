@@ -1,46 +1,72 @@
 import { ChangeDetectionStrategy, Component, signal } from '@angular/core';
 import { RouterOutlet } from '@angular/router';
 import { ChatComponent } from './chat.component';
+import { TodosComponent } from './todos.component';
 
 @Component({
   selector: 'app-root',
-  imports: [RouterOutlet, ChatComponent],
+  imports: [RouterOutlet, ChatComponent, TodosComponent],
   template: `
-    <div class="app-layout">
-      <div class="left-panel" [style.background]="leftPanelBackground()">
-        <h1>Agentic Todos</h1>
+    <div class="app">
+      <div class="app__leftPanel" [style.background]="leftPanelBackground()">
+        <app-todos />
       </div>
-      
-      <app-chat (backgroundColorChange)="onBackgroundColorChange($event)" />
+
+      <div class="app__rightPanel">
+        <app-chat (backgroundColorChange)="onBackgroundColorChange($event)" />
+      </div>
     </div>
     <router-outlet />
   `,
   styles: `
-    .app-layout {
+    .app {
       display: flex;
       height: 100vh;
+      min-height: 0;
+      min-width: 0;
     }
 
-    .left-panel {
+    .app__leftPanel {
       flex: 1;
       display: flex;
-      align-items: center;
-      justify-content: center;
+      flex-direction: column;
+      align-items: stretch;
+      justify-content: stretch;
       transition: background 0.3s ease;
-      
-      h1 {
-        font-size: 3rem;
-        font-weight: 700;
-        color: white;
-        text-align: center;
-        margin: 0;
-      }
+      overflow: hidden;
+      min-height: 0;
+      min-width: 0;
+    }
+
+    .app__rightPanel {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      align-items: stretch;
+      justify-content: stretch;
+      overflow: hidden;
+      min-height: 0;
+      min-width: 0;
+    }
+
+    .app__leftPanel app-todos {
+      flex: 1;
+      min-height: 0;
+      min-width: 0;
+      display: flex;
+    }
+
+    .app__rightPanel app-chat {
+      flex: 1;
+      min-height: 0;
+      min-width: 0;
+      display: flex;
     }
   `,
   changeDetection: ChangeDetectionStrategy.OnPush,
 })
 export class App {
-  protected readonly leftPanelBackground = signal('linear-gradient(135deg, #667eea 0%, #764ba2 100%)');
+  protected readonly leftPanelBackground = signal('var(--brand-gradient)');
 
   protected onBackgroundColorChange(color: string): void {
     this.leftPanelBackground.set(color);
