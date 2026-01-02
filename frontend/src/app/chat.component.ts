@@ -1,6 +1,7 @@
-import { ChangeDetectionStrategy, Component, ElementRef, OnInit, output, signal, viewChild } from '@angular/core';
-import { HttpAgent, Message as Message } from "@ag-ui/client"
+import { ChangeDetectionStrategy, Component, ElementRef, inject, OnInit, signal, viewChild } from '@angular/core';
+import { HttpAgent, Message as Message, RunAgentParameters } from "@ag-ui/client"
 import { Field, form, required } from '@angular/forms/signals';
+import { WebmcpService } from './webmcp.service';
 
 interface NewMessageViewModel {
   content: string;
@@ -327,42 +328,10 @@ export class ChatComponent implements OnInit {
   protected readonly status = signal('Ready to chat');
   protected readonly isLoading = signal(false);
 
-  protected readonly backgroundColorChange = output<string>();
-  protected readonly todoAdd = output<string>();
-
   private readonly messagesContainer = viewChild<ElementRef>('messagesContainer');
   private agent!: HttpAgent;
+  private webmcp = inject(WebmcpService);
   private pendingFrontendToolCalls: Array<{ id: string, name: string, args: string }> = [];
-  private readonly tools = [
-    {
-      name: "change_background_color",
-      description: "Change the left panel background color. Can accept solid colors (e.g., '#1e3a8a', 'red') or gradients (e.g., 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)').",
-      parameters: {
-        type: "object",
-        properties: {
-          color: {
-            type: "string",
-            description: "The background color or gradient to apply to the left panel. Can be a hex color, named color, or CSS gradient."
-          }
-        },
-        required: ["color"]
-      }
-    },
-    {
-      name: "add_todo",
-      description: "Add a todo to the todo list in the left panel.",
-      parameters: {
-        type: "object",
-        properties: {
-          title: {
-            type: "string",
-            description: "The todo title text."
-          }
-        },
-        required: ["title"]
-      }
-    }
-  ];
 
   ngOnInit() {
     this.initializeAgent();
@@ -406,7 +375,7 @@ export class ChatComponent implements OnInit {
           }
         ]);
         // If it's a frontend tool, collect for batch execution
-        if (event.toolCallName === "change_background_color" || event.toolCallName === "add_todo") {
+        if (this.webmcp.tools().some(t => t.name === event.toolCallName)) {
           this.pendingFrontendToolCalls.push({ id: event.toolCallId, name: event.toolCallName, args: '' });
           this.status.set(`Executing ${event.toolCallName}...`);
         }
@@ -465,26 +434,26 @@ export class ChatComponent implements OnInit {
         if (this.pendingFrontendToolCalls.length > 0) {
           const toolMessages: Message[] = [];
           for (const call of this.pendingFrontendToolCalls) {
-            let parsedArgs: unknown = {};
+            let parsedArgs: Record<string, any> = {};
             try {
-              parsedArgs = call.args ? JSON.parse(call.args) : {};
+              const parsed: unknown = call.args ? JSON.parse(call.args) : {};
+              parsedArgs = (parsed && typeof parsed === 'object' && !Array.isArray(parsed))
+                ? (parsed as Record<string, any>)
+                : {};
             } catch {
               parsedArgs = {};
             }
-            
-            let result: string = '';
-            if (call.name === "change_background_color") {
-              const args = parsedArgs as { color?: unknown };
-              const color = typeof args.color === 'string' ? args.color : '#1e3a8a';
-              result = JSON.stringify(this.changeBackgroundColor(color));
-            } else if (call.name === "add_todo") {
-              const args = parsedArgs as { title?: unknown };
-              const title = typeof args.title === 'string' ? args.title : '';
-              result = JSON.stringify(this.addTodo(title));
-            } else {
-              result = JSON.stringify('Error: Unknown frontend tool.');
-            }
 
+            let result: string = '';
+            try {
+              const invokeToolResponse = await this.webmcp.invokeTool(call.name, parsedArgs);
+              result = typeof invokeToolResponse === 'string'
+                ? invokeToolResponse
+                : JSON.stringify(invokeToolResponse);
+            } catch (error) {
+              result = 'Error: Tool execution failed.';
+            }
+            
             // Update the tool message with the result
             this.messages.update(msgs => {
               return msgs.map(msg =>
@@ -533,7 +502,13 @@ export class ChatComponent implements OnInit {
     this.status.set('Agent thinking...');
 
     try {
-      const parameters = { tools: this.tools };
+      const parameters: RunAgentParameters = {
+        tools: this.webmcp.tools().map(t => ({
+          name: t.name,
+          description: t.description,
+          parameters: t.inputSchema,
+        }))
+      };
       await this.agent.runAgent(parameters);
     } catch (error) {
       console.error('Error running agent:', error);
@@ -596,21 +571,5 @@ export class ChatComponent implements OnInit {
         container.scrollTop = container.scrollHeight;
       }
     }, 100);
-  }
-
-  private changeBackgroundColor(color: string): string {
-    this.backgroundColorChange.emit(color);
-    console.log('Left panel background color changed to:', color);
-    return "Success: Function completed.";
-  }
-
-  private addTodo(title: string): string {
-    const trimmed = title.trim();
-    if (!trimmed) {
-      return 'Error: Missing todo title.';
-    }
-
-    this.todoAdd.emit(trimmed);
-    return 'Success: Todo added.';
   }
 }
