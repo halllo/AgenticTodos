@@ -4,7 +4,20 @@ This experimental application aims to explore the following technologies:
 
 - Microsoft Agent Framework
 - AG-UI
+- A2A (Agent-to-Agent protocol)
 - WebMCP
+
+## Available Endpoints
+
+The backend exposes the following agent endpoints:
+
+### AG-UI Endpoints
+- `/openai/agui` - OpenAI-based agent with AG-UI protocol
+- `/amazonbedrock/agui` - Amazon Bedrock-based agent with AG-UI protocol
+
+### A2A (Agent-to-Agent) Endpoints
+- `/openai/a2a` - OpenAI-based agent with A2A protocol
+- `/amazonbedrock/a2a` - Amazon Bedrock-based agent with A2A protocol
 
 ## Problems
 

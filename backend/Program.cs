@@ -29,6 +29,16 @@ app.MapAGUI("/amazonbedrock/agui", CreateAgent(
     tools: tools,
     services: app.Services));
 
+// A2A (Agent-to-Agent) endpoints
+app.MapA2A(CreateAgent(
+    chatClient: OpenAI(builder.Configuration),
+    tools: tools,
+    services: app.Services), "/openai/a2a");
+app.MapA2A(CreateAgent(
+    chatClient: AmazonBedrock(builder.Configuration, app.Services),
+    tools: tools,
+    services: app.Services), "/amazonbedrock/a2a");
+
 app.Run();
 
 
