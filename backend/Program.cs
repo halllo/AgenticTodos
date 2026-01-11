@@ -21,7 +21,7 @@ app.MapGet("/", () => "Hello World!");
 
 var tools = GetTools();
 app.MapAGUI("/openai/agui", CreateAgent(
-    chatClient: OpenAI(builder.Configuration),
+    chatClient: OpenAI(builder.Configuration, builder.Environment.ApplicationName),
     tools: tools,
     services: app.Services));
 app.MapAGUI("/amazonbedrock/agui", CreateAgent(
@@ -32,27 +32,33 @@ app.MapAGUI("/amazonbedrock/agui", CreateAgent(
 app.Run();
 
 
-static IChatClient OpenAI(IConfiguration configuration)
+static IChatClient OpenAI(IConfiguration configuration, string applicationName)
 {
-    return new OpenAIClient(configuration["OPENAI_API_KEY"] ?? throw new InvalidOperationException("OPENAI_API_KEY is not set."))
+    var openaiApiKey = configuration["OPENAI_API_KEY"] ?? throw new InvalidOperationException("OPENAI_API_KEY is not set.");
+    return new OpenAIClient(openaiApiKey)
         .GetChatClient("gpt-4o")
         .AsIChatClient()
+        .AsBuilder()
+        .UseOpenTelemetry(sourceName: applicationName, configure: c => c.EnableSensitiveData = true)
+        .Build()
         ;
 }
 
 static IChatClient AmazonBedrock(IConfiguration configuration, IServiceProvider services)
 {
+    var applicationName = services.GetRequiredService<IHostEnvironment>().ApplicationName;
     var runtime = new AmazonBedrockRuntimeClient(
-        awsAccessKeyId: configuration["AWSBedrockAccessKeyId"]!,
-        awsSecretAccessKey: configuration["AWSBedrockSecretAccessKey"]!,
-        region: Amazon.RegionEndpoint.GetBySystemName(configuration["AWSBedrockRegion"]!));
+        awsAccessKeyId: configuration["AWSBedrockAccessKeyId"],
+        awsSecretAccessKey: configuration["AWSBedrockSecretAccessKey"],
+        region: Amazon.RegionEndpoint.GetBySystemName(configuration["AWSBedrockRegion"]));
 
     return runtime
         .AsIChatClient(defaultModelId:
-        //"eu.anthropic.claude-sonnet-4-20250514-v1:0"
-        "eu.anthropic.claude-sonnet-4-5-20250929-v1:0"
+            //"eu.anthropic.claude-sonnet-4-20250514-v1:0"
+            "eu.anthropic.claude-sonnet-4-5-20250929-v1:0"
         )
         .AsBuilder()
+        .UseOpenTelemetry(sourceName: applicationName, configure: c => c.EnableSensitiveData = true)
         // .ConfigureOptions(c =>
         // {
         //     c.AllowMultipleToolCalls = false; // does not seem to have any effect
@@ -74,19 +80,25 @@ static IChatClient AmazonBedrock(IConfiguration configuration, IServiceProvider 
 
 static AIAgent CreateAgent(IChatClient chatClient, AIFunction[] tools, IServiceProvider services)
 {
-    return chatClient.CreateAIAgent(
-        name: "AGUIAssistant",
-        tools: tools,
-        services: services);
+    var applicationName = services.GetRequiredService<IHostEnvironment>().ApplicationName;
+    return chatClient
+        .CreateAIAgent(
+            name: "AGUIAssistant",
+            tools: tools,
+            services: services)
+        .AsBuilder()
+        .UseOpenTelemetry(sourceName: applicationName, configure: c => c.EnableSensitiveData = true)
+        .Build(services)
+        ;
 }
 
 static AIFunction[] GetTools()
 {
     return [
         AIFunctionFactory.Create(
-            method: (IServiceProvider services) => 
+            method: (IServiceProvider services) =>
             {
-                var loggerFactory = services.GetRequiredService<ILoggerFactory>(); 
+                var loggerFactory = services.GetRequiredService<ILoggerFactory>();
                 var logger = loggerFactory.CreateLogger("GetCurrentTimeFunction");
                 logger.LogInformation("GetCurrentTimeFunction called.");
                 return DateTimeOffset.UtcNow;
