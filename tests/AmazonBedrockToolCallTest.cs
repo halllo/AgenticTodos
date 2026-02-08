@@ -17,7 +17,7 @@ public class AmazonBedrockToolCallTest(ITestOutputHelper output)
 
         List<string> toolCalls = [];
 
-        var agent = client.CreateAIAgent(
+        var agent = client.AsAIAgent(
             name: "Agent",
             tools: [
                 AIFunctionFactory.Create(

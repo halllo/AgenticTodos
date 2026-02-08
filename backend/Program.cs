@@ -11,6 +11,10 @@ var builder = WebApplication.CreateBuilder(args);
 OpenTelemetryExtensions.ConfigureOpenTelemetry(builder);
 builder.Services.AddOpenApi();
 builder.Services.AddAGUI();
+builder.Services.AddKeyedSingleton("mainagent", (sp, key) => CreateAgent(
+    chatClient: OpenAI(builder.Configuration, builder.Environment.ApplicationName),
+    tools: GetTools(),
+    services: sp));
 
 
 var app = builder.Build();
@@ -82,7 +86,7 @@ static AIAgent CreateAgent(IChatClient chatClient, AIFunction[] tools, IServiceP
 {
     var applicationName = services.GetRequiredService<IHostEnvironment>().ApplicationName;
     return chatClient
-        .CreateAIAgent(
+        .AsAIAgent(
             name: "AGUIAssistant",
             tools: tools,
             services: services)
