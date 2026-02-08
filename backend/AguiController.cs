@@ -1,6 +1,7 @@
 using System.Runtime.CompilerServices;
 using System.Text.Json;
 using System.Reflection;
+using System.Collections;
 using Microsoft.Agents.AI;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.AI;
@@ -16,24 +17,17 @@ public class AguiController([FromKeyedServices("mainagent")] AIAgent agent) : Co
     [HttpPost]
     public async Task<IResult> Agui(CancellationToken cancellationToken)
     {
-        var inputType = Type.GetType("Microsoft.Agents.AI.Hosting.AGUI.AspNetCore.Shared.RunAgentInput, Microsoft.Agents.AI.Hosting.AGUI.AspNetCore", throwOnError: true)!;
-        var input = await AguiReflector.Parse(inputType, HttpContext.Request, cancellationToken);
+        var jsonOptions = HttpContext.RequestServices.GetRequiredService<IOptions<Microsoft.AspNetCore.Http.Json.JsonOptions>>();
+        var jsonSerializerOptions = jsonOptions.Value.SerializerOptions;
+
+        var input = await AguiRunAgentInputCompatible.Parse(HttpContext.Request, jsonSerializerOptions, cancellationToken);
         if (input is null)
         {
             return Results.BadRequest();
         }
 
-        var jsonOptions = HttpContext.RequestServices.GetRequiredService<IOptions<Microsoft.AspNetCore.Http.Json.JsonOptions>>();
-        var jsonSerializerOptions = jsonOptions.Value.SerializerOptions;
-
-        var messages = AguiReflector.AsChatMessages(inputType.GetProperty("Messages")?.GetValue(input)!, jsonSerializerOptions);
-        var clientTools = ((inputType.GetProperty("Tools")?.GetValue(input) as IEnumerable<object>) ?? [])
-            .Select(t => AIFunctionFactory.CreateDeclaration(
-                name: t.GetType().GetProperty("Name")?.GetValue(t) as string ?? string.Empty,
-                description: t.GetType().GetProperty("Description")?.GetValue(t) as string ?? string.Empty,
-                jsonSchema: t.GetType().GetProperty("Parameters")?.GetValue(t) as JsonElement? ?? new JsonElement()))
-            .Cast<AITool>()
-            .ToList();
+        var messages = input.Messages;
+        var clientTools = input.Tools;
 
         // Create run options with AG-UI context in AdditionalProperties
         var runOptions = new ChatClientAgentRunOptions
@@ -43,11 +37,11 @@ public class AguiController([FromKeyedServices("mainagent")] AIAgent agent) : Co
                 Tools = clientTools,
                 AdditionalProperties = new AdditionalPropertiesDictionary
                 {
-                    ["ag_ui_state"] = inputType.GetProperty("State")?.GetValue(input),
-                    ["ag_ui_context"] = (inputType.GetProperty("Context")?.GetValue(input) as object[])?.Select(c => new KeyValuePair<string, string>(c.GetType().GetProperty("Description")?.GetValue(c) as string ?? string.Empty, c.GetType().GetProperty("Value")?.GetValue(c) as string ?? string.Empty)).ToArray(),
-                    ["ag_ui_forwarded_properties"] = inputType.GetProperty("ForwardedProperties")?.GetValue(input),
-                    ["ag_ui_thread_id"] = inputType.GetProperty("ThreadId")?.GetValue(input),
-                    ["ag_ui_run_id"] = inputType.GetProperty("RunId")?.GetValue(input)
+                    ["ag_ui_state"] = input.State,
+                    ["ag_ui_context"] = input.Context,
+                    ["ag_ui_forwarded_properties"] = input.ForwardedProperties,
+                    ["ag_ui_thread_id"] = input.ThreadId,
+                    ["ag_ui_run_id"] = input.RunId
                 }
             }
         };
@@ -60,8 +54,8 @@ public class AguiController([FromKeyedServices("mainagent")] AIAgent agent) : Co
             .AsChatResponseUpdatesAsync()
             .FilterServerToolsFromMixedToolInvocationsAsync(clientTools, cancellationToken)
             .AsAGUIEventStreamAsync(
-                inputType.GetProperty("ThreadId")?.GetValue(input) as string ?? string.Empty,
-                inputType.GetProperty("RunId")?.GetValue(input) as string ?? string.Empty,
+                input.ThreadId,
+                input.RunId,
                 jsonSerializerOptions,
                 cancellationToken);
 
@@ -80,6 +74,171 @@ public class AguiController([FromKeyedServices("mainagent")] AIAgent agent) : Co
         return (IResult)output;
     }
 }
+
+internal sealed class AguiRunAgentInputCompatible
+{
+    private AguiRunAgentInputCompatible(
+        string threadId,
+        string runId,
+        IReadOnlyList<ChatMessage> messages,
+        List<AITool> tools,
+        object? state,
+        object? forwardedProperties,
+        KeyValuePair<string, string>[]? context)
+    {
+        ThreadId = threadId;
+        RunId = runId;
+        Messages = messages;
+        Tools = tools;
+        State = state;
+        ForwardedProperties = forwardedProperties;
+        Context = context;
+    }
+
+    public string ThreadId { get; }
+    public string RunId { get; }
+
+    public object? State { get; }
+    public object? ForwardedProperties { get; }
+    public KeyValuePair<string, string>[]? Context { get; }
+
+    public IReadOnlyList<ChatMessage> Messages { get; }
+    public List<AITool> Tools { get; }
+
+    public static async Task<AguiRunAgentInputCompatible?> Parse(
+        HttpRequest request,
+        JsonSerializerOptions jsonSerializerOptions,
+        CancellationToken cancellationToken)
+    {
+        var inputType = Type.GetType(
+            "Microsoft.Agents.AI.Hosting.AGUI.AspNetCore.Shared.RunAgentInput, Microsoft.Agents.AI.Hosting.AGUI.AspNetCore",
+            throwOnError: true)!;
+
+        object? input;
+        try
+        {
+            input = await JsonSerializer.DeserializeAsync(
+                utf8Json: request.Body,
+                returnType: inputType,
+                options: jsonSerializerOptions,
+                cancellationToken: cancellationToken);
+        }
+        catch (JsonException)
+        {
+            return null;
+        }
+
+        if (input is null)
+        {
+            return null;
+        }
+
+        var messagesProp = inputType.GetProperty("Messages");
+        var toolsProp = inputType.GetProperty("Tools");
+        var stateProp = inputType.GetProperty("State");
+        var contextProp = inputType.GetProperty("Context");
+        var threadIdProp = inputType.GetProperty("ThreadId");
+        var runIdProp = inputType.GetProperty("RunId");
+
+        // Property name differs across preview versions and/or JSON naming policies.
+        var forwardedPropsProp = inputType.GetProperty("ForwardedProperties") ?? inputType.GetProperty("ForwardedProps");
+
+        var aguiMessages = messagesProp?.GetValue(input);
+        if (aguiMessages is null)
+        {
+            return null;
+        }
+
+        var parsedMessages = AguiReflector.AsChatMessages(aguiMessages, jsonSerializerOptions).ToList();
+
+        var toolDefinitions = BuildTools(toolsProp?.GetValue(input));
+        var parsedTools = toolDefinitions
+            .Select(t => AIFunctionFactory.CreateDeclaration(name: t.Name, description: t.Description, jsonSchema: t.Parameters))
+            .Cast<AITool>()
+            .ToList();
+
+        var context = BuildContextPairs(contextProp?.GetValue(input));
+
+        return new AguiRunAgentInputCompatible(
+            threadId: threadIdProp?.GetValue(input) as string ?? string.Empty,
+            runId: runIdProp?.GetValue(input) as string ?? string.Empty,
+            messages: parsedMessages,
+            tools: parsedTools,
+            state: stateProp?.GetValue(input),
+            forwardedProperties: forwardedPropsProp?.GetValue(input),
+            context: context);
+    }
+
+    private static IReadOnlyList<AguiToolCompatible> BuildTools(object? toolsObj)
+    {
+        if (toolsObj is null)
+        {
+            return [];
+        }
+
+        if (toolsObj is not IEnumerable enumerable)
+        {
+            return [];
+        }
+
+        var tools = new List<AguiToolCompatible>();
+        foreach (var item in enumerable)
+        {
+            if (item is null)
+            {
+                continue;
+            }
+
+            var itemType = item.GetType();
+
+            var name = itemType.GetProperty("Name")?.GetValue(item) as string ?? string.Empty;
+            var description = itemType.GetProperty("Description")?.GetValue(item) as string ?? string.Empty;
+
+            var parametersObj = itemType.GetProperty("Parameters")?.GetValue(item);
+            var parameters = parametersObj switch
+            {
+                JsonElement je => je,
+                JsonDocument jd => jd.RootElement.Clone(),
+                _ => default
+            };
+
+            tools.Add(new AguiToolCompatible(name, description, parameters));
+        }
+
+        return tools;
+    }
+
+    private static KeyValuePair<string, string>[]? BuildContextPairs(object? contextObj)
+    {
+        if (contextObj is null)
+        {
+            return null;
+        }
+
+        if (contextObj is not IEnumerable enumerable)
+        {
+            return null;
+        }
+
+        var items = new List<KeyValuePair<string, string>>();
+        foreach (var item in enumerable)
+        {
+            if (item is null)
+            {
+                continue;
+            }
+
+            var itemType = item.GetType();
+            var description = itemType.GetProperty("Description")?.GetValue(item) as string ?? string.Empty;
+            var value = itemType.GetProperty("Value")?.GetValue(item) as string ?? string.Empty;
+            items.Add(new KeyValuePair<string, string>(description, value));
+        }
+
+        return items.Count == 0 ? null : items.ToArray();
+    }
+}
+
+internal readonly record struct AguiToolCompatible(string Name, string Description, JsonElement Parameters);
 
 public static class AguiReflector
 {
@@ -197,20 +356,6 @@ public static class AguiReflector
 
         var result = asChatMessages!.Invoke(null, [aguidMessages, jsonSerializerOptions]);
         return (IEnumerable<ChatMessage>)result!;
-    }
-
-    public static async Task<object?> Parse(Type type, HttpRequest request, CancellationToken cancellationToken)
-    {
-        var readFromJsonAsyncDefinition = typeof(HttpRequestJsonExtensions)
-            .GetMethod(
-                name: "ReadFromJsonAsync",
-                bindingAttr: System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static,
-                types: [typeof(HttpRequest), typeof(CancellationToken)]);
-
-        var readFromJsonAsync = readFromJsonAsyncDefinition!.MakeGenericMethod(type);
-        var invoked = readFromJsonAsync.Invoke(null, [request, cancellationToken]);
-        var result = await AwaitReflectedAsync(invoked!);
-        return result;
     }
 
     public static async IAsyncEnumerable<ChatResponseUpdate> FilterServerToolsFromMixedToolInvocationsAsync(
