@@ -20,15 +20,9 @@ public class AgentProvider(IServiceProvider services) : IAgentProvider
 }
 
 [ApiController]
-[Route("agents")]
-public class AguiController(IAgentProvider agents) : ControllerBase
+[Route("agents/reflection")]
+public class AguiReflectionController(IAgentProvider agents) : ControllerBase
 {
-    [HttpGet]
-    public async Task<IResult> List(CancellationToken cancellationToken)
-    {
-        return Results.Ok(agents.GetAliases());
-    }
-
     /// <summary>
     /// Inlined from https://github.com/microsoft/agent-framework/blob/main/dotnet/src/Microsoft.Agents.AI.Hosting.AGUI.AspNetCore/AGUIEndpointRouteBuilderExtensions.cs
     /// </summary>
@@ -395,7 +389,7 @@ public static class AguiReflector
     {
         var aGUIChatResponseUpdateStreamExtensions = Type.GetType("Microsoft.Agents.AI.Hosting.AGUI.AspNetCore.AGUIChatResponseUpdateStreamExtensions, Microsoft.Agents.AI.Hosting.AGUI.AspNetCore", throwOnError: true);
         var filterServerToolsFromMixedToolInvocationsAsync = aGUIChatResponseUpdateStreamExtensions!
-            .GetMethod("FilterServerToolsFromMixedToolInvocationsAsync", System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static)!;
+            .GetMethod("FilterServerToolsFromMixedToolInvocationsAsync", BindingFlags.Public | BindingFlags.Static)!;
         var invoked = (IAsyncEnumerable<ChatResponseUpdate>)filterServerToolsFromMixedToolInvocationsAsync.Invoke(null, [updates, clientTools, cancellationToken])!;
         await foreach (var update in invoked.WithCancellation(cancellationToken))
         {

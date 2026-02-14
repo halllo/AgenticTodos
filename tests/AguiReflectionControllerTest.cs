@@ -12,7 +12,7 @@ namespace AgenticTodos.Tests;
 /// <summary>
 /// In this test I try to get the same behavior as https://github.com/microsoft/agent-framework/blob/main/dotnet/src/Microsoft.Agents.AI.Hosting.AGUI.AspNetCore/AGUIEndpointRouteBuilderExtensions.csTests so that I can us it more flexibly.
 /// </summary>
-public class AguiControllerTest
+public class AguiReflectionControllerTest
 {
     [Fact]
     public async Task Request()
@@ -93,7 +93,7 @@ public class AguiControllerTest
         var agent = client.AsAIAgent(name: "Agent", tools: []);
         var agentProvider = new StaticAgentProvider(agent);
 
-        var controller = new AguiController(agentProvider)
+        var controller = new AguiReflectionController(agentProvider)
         {
             ControllerContext = new ControllerContext
             {

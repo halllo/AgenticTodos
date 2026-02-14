@@ -406,7 +406,7 @@ export class ChatComponent {
 
   private agent?: HttpAgent;
   private initializeAgent(agentAlias: string): void {
-    const agent = new HttpAgent({ url: `/agents/${agentAlias}/agui` });
+    const agent = new HttpAgent({ url: `/agents/routed/${agentAlias}/agui` });
     agent.subscribe({
       onTextMessageStartEvent: ({ event }) => {
         console.log('Text message started:', event);

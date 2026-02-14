@@ -32,6 +32,17 @@ builder.Services.AddKeyedSingleton("agentAliases", builder.Services
     .ToList());
 builder.Services.AddScoped<IAgentProvider, AgentProvider>();
 
+builder.Services.AddSingleton<HttpContextRoutingAgent>();
+builder.Services.AddHttpContextAccessor();
+builder.Services.AddSingleton<Func<HttpContext, ValueTask<AIAgent>>>(async httpContext =>
+{
+    await Task.Yield();//simulating loading
+    var alias = httpContext.Request.RouteValues["alias"]?.ToString() ?? string.Empty;
+    var agents = httpContext.RequestServices.GetRequiredService<IAgentProvider>();
+    var agent = agents.Get(alias);
+    return agent!;
+});
+
 
 
 var app = builder.Build();
@@ -39,18 +50,23 @@ var app = builder.Build();
 app.MapOpenApi();
 app.MapScalarApiReference();
 app.MapGet("/", () => "Hello World!");
-
-app.MapControllers();
+app.MapGet("/agents", (IAgentProvider agents) => agents.GetAliases());
 
 // Singleton agents with official AGUI endpoints
-app.MapAGUI("/openai/agui", CreateAgent(
+app.MapAGUI("/agents/static/openai/agui", CreateAgent(
     chatClient: OpenAI(builder.Configuration, builder.Environment.ApplicationName),
     tools: tools,
     services: app.Services));
-app.MapAGUI("/amazonbedrock/agui", CreateAgent(
+app.MapAGUI("/agents/static/amazonbedrock/agui", CreateAgent(
     chatClient: AmazonBedrock(builder.Configuration, app.Services),
     tools: tools,
     services: app.Services));
+
+// Routing agent (suggested workaround)
+app.MapAGUI("/agents/routed/{alias}/agui", app.Services.GetRequiredService<HttpContextRoutingAgent>());
+
+// Reflection agents (self-made)
+app.MapControllers();
 
 app.Run();
 
