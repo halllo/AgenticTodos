@@ -101,3 +101,24 @@ data: {"message":"Expected toolResult blocks at messages.4.content for the follo
 OpenAI returns tool calls sequentually, which works fine.
 
 How can we make Amazon Bedrock return tool calls sequentually and not in parallel?
+
+### ❌ AG-UI Endpoints do not support per-request agent selection
+
+The official `.MapAGUI()` methods require an `AIAgent` object to be passed on. That does not work if we want to select an agent at request level. Unfortunately all the AGUI types are internal, so we cannot easily build our own endpoints.
+
+I started a PR to allow for a request-level callback which allows deferred agent selection:
+
+https://github.com/microsoft/agent-framework/pull/2343
+
+Now there is even another PR:
+
+https://github.com/microsoft/agent-framework/pull/3162
+
+Merge hesitancy comes from perceived inconsistency risks regarding A2A.
+
+Possible workarounds are
+
+- use a [`HttpContextRoutingAgent`](https://github.com/microsoft/agent-framework/pull/3162#issuecomment-3754459882)
+- use reflection to instantiate the AGUI types
+
+Neither are good solutions.
