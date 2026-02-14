@@ -28,6 +28,7 @@ builder.Services.AddKeyedSingleton("agentAliases", builder.Services
     .Select(sd => sd.ServiceKey?.ToString())
     .Where(key => key is not null)
     .Select(key => key!)
+    .OrderBy(key => key)
     .ToList());
 builder.Services.AddScoped<IAgentProvider, AgentProvider>();
 

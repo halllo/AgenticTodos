@@ -377,9 +377,15 @@ export class ChatComponent {
   protected readonly messages = signal<MessageViewModel[]>([]);
   protected readonly status = signal('Ready to chat');
   protected readonly isLoading = signal(false);
-  
+
   protected readonly agents = httpResource<string[]>(() => '/agents');
   protected readonly selectedAgent = linkedSignal<string | undefined>(() => this.agents.value()?.[0]);
+
+  // Auto-scroll effect: scroll to bottom when messages change, but only if user is already near bottom
+  private autoScrollEffect = effect(() => {
+    this.messages(); // Track messages changes
+    this.scrollToBottomIfNearBottom();
+  });
 
   protected onAgentChange(event: Event): void {
     const select = event.target as HTMLSelectElement;
@@ -629,5 +635,22 @@ export class ChatComponent {
         container.scrollTop = container.scrollHeight;
       }
     }, 100);
+  }
+
+  private isNearBottom(): boolean {
+    const container = this.messagesContainer()?.nativeElement;
+    if (!container) return true;
+
+    const threshold = 10; // pixels from bottom
+    const position = container.scrollTop + container.clientHeight;
+    const height = container.scrollHeight;
+
+    return position >= height - threshold;
+  }
+
+  private scrollToBottomIfNearBottom(): void {
+    if (this.isNearBottom()) {
+      this.scrollToBottom();
+    }
   }
 }
