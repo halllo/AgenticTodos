@@ -11,10 +11,26 @@ var builder = WebApplication.CreateBuilder(args);
 OpenTelemetryExtensions.ConfigureOpenTelemetry(builder);
 builder.Services.AddOpenApi();
 builder.Services.AddAGUI();
-builder.Services.AddKeyedSingleton("mainagent", (sp, key) => CreateAgent(
+builder.Services.AddControllers();
+
+var tools = GetTools();
+builder.Services.AddKeyedScoped("openai", (sp, key) => CreateAgent(
     chatClient: OpenAI(builder.Configuration, builder.Environment.ApplicationName),
-    tools: GetTools(),
+    tools: tools,
     services: sp));
+builder.Services.AddKeyedScoped("amazonbedrock", (sp, key) => CreateAgent(
+    chatClient: AmazonBedrock(builder.Configuration, sp),
+    tools: tools,
+    services: sp));
+
+builder.Services.AddKeyedSingleton("agentAliases", builder.Services
+    .Where(sd => sd.IsKeyedService && sd.ServiceType == typeof(AIAgent))
+    .Select(sd => sd.ServiceKey?.ToString())
+    .Where(key => key is not null)
+    .Select(key => key!)
+    .ToList());
+builder.Services.AddScoped<IAgentProvider, AgentProvider>();
+
 
 
 var app = builder.Build();
@@ -23,7 +39,9 @@ app.MapOpenApi();
 app.MapScalarApiReference();
 app.MapGet("/", () => "Hello World!");
 
-var tools = GetTools();
+app.MapControllers();
+
+// Singleton agents with official AGUI endpoints
 app.MapAGUI("/openai/agui", CreateAgent(
     chatClient: OpenAI(builder.Configuration, builder.Environment.ApplicationName),
     tools: tools,

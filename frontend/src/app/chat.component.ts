@@ -1,5 +1,6 @@
-import { ChangeDetectionStrategy, Component, ElementRef, inject, OnInit, signal, viewChild } from '@angular/core';
-import { HttpAgent, Message as Message, RunAgentParameters } from "@ag-ui/client"
+import { ChangeDetectionStrategy, Component, effect, ElementRef, inject, linkedSignal, resource, signal, viewChild } from '@angular/core';
+import { httpResource } from '@angular/common/http';
+import { HttpAgent, Message, RunAgentParameters } from "@ag-ui/client"
 import { Field, form, required } from '@angular/forms/signals';
 import { WebmcpService } from './webmcp.service';
 
@@ -23,7 +24,19 @@ interface MessageViewModel {
   template: `
     <div class="chat">
       <header class="chat__header">
-        <h1>Assistant</h1>
+        <div class="chat__header-left">
+          <h1>Assistant</h1>
+          <select
+            class="chat__agent-selector"
+            [value]="selectedAgent()"
+            (change)="onAgentChange($event)"
+            [disabled]="isLoading()"
+          >
+            @for (agent of agents.value(); track agent) {
+              <option [value]="agent">{{ agent }}</option>
+            }
+          </select>
+        </div>
         <div class="chat__status" [class.chat__status--active]="!isLoading()">
           {{ status() }}
         </div>
@@ -113,10 +126,44 @@ interface MessageViewModel {
       color: white;
       box-shadow: 0 2px 4px rgba(0,0,0,0.1);
 
+      .chat__header-left {
+        display: flex;
+        align-items: center;
+        gap: 1rem;
+      }
+
       h1 {
         margin: 0;
         font-size: 1.5rem;
         font-weight: 600;
+      }
+
+      .chat__agent-selector {
+        padding: 0.5rem 1rem;
+        border-radius: 8px;
+        border: 2px solid rgba(255, 255, 255, 0.3);
+        background: rgba(255, 255, 255, 0.1);
+        color: white;
+        font-size: 0.875rem;
+        font-weight: 500;
+        cursor: pointer;
+        outline: none;
+        transition: all 0.2s;
+
+        &:hover:not(:disabled) {
+          background: rgba(255, 255, 255, 0.2);
+          border-color: rgba(255, 255, 255, 0.5);
+        }
+
+        &:disabled {
+          opacity: 0.5;
+          cursor: not-allowed;
+        }
+
+        option {
+          background: var(--surface);
+          color: var(--text);
+        }
       }
 
       .chat__status {
@@ -124,7 +171,7 @@ interface MessageViewModel {
         padding: 0.5rem 1rem;
         border-radius: 20px;
         background: rgba(255, 255, 255, 0.2);
-        
+
         &.chat__status--active {
           background: rgba(76, 175, 80, 0.3);
         }
@@ -319,7 +366,10 @@ interface MessageViewModel {
     }
   `,
 })
-export class ChatComponent implements OnInit {
+export class ChatComponent {
+  private readonly webmcp = inject(WebmcpService);
+  private readonly messagesContainer = viewChild<ElementRef>('messagesContainer');
+
   protected readonly newMessageViewModel = signal<NewMessageViewModel>({ content: '' });
   protected readonly newMessageForm = form(this.newMessageViewModel, schemaPath => {
     required(schemaPath.content);
@@ -327,22 +377,30 @@ export class ChatComponent implements OnInit {
   protected readonly messages = signal<MessageViewModel[]>([]);
   protected readonly status = signal('Ready to chat');
   protected readonly isLoading = signal(false);
+  
+  protected readonly agents = httpResource<string[]>(() => '/agents');
+  protected readonly selectedAgent = linkedSignal<string | undefined>(() => this.agents.value()?.[0]);
 
-  private readonly messagesContainer = viewChild<ElementRef>('messagesContainer');
-  private agent!: HttpAgent;
-  private webmcp = inject(WebmcpService);
-  private pendingFrontendToolCalls: Array<{ id: string, name: string, args: string }> = [];
-
-  ngOnInit() {
-    this.initializeAgent();
+  protected onAgentChange(event: Event): void {
+    const select = event.target as HTMLSelectElement;
+    const newAgent = select.value;
+    this.selectedAgent.set(newAgent);
   }
 
-  private initializeAgent(): void {
-    if (this.agent) {
-      throw new Error('Agent is already initialized.');
+  private onSelectedAgentChanged = effect(() => {
+    const agentAlias = this.selectedAgent();
+    if (agentAlias) {
+      console.log('Selected agent changed:', agentAlias);
+      this.messages.set([]);
+      this.initializeAgent(agentAlias);
     }
+  });
 
-    const agent = new HttpAgent({ url: '/amazonbedrock/agui' });
+  private pendingFrontendToolCalls: Array<{ id: string, name: string, args: string }> = [];
+
+  private agent?: HttpAgent;
+  private initializeAgent(agentAlias: string): void {
+    const agent = new HttpAgent({ url: `/agents/${agentAlias}/agui` });
     agent.subscribe({
       onTextMessageStartEvent: ({ event }) => {
         console.log('Text message started:', event);
@@ -453,7 +511,7 @@ export class ChatComponent implements OnInit {
             } catch (error) {
               result = 'Error: Tool execution failed.';
             }
-            
+
             // Update the tool message with the result
             this.messages.update(msgs => {
               return msgs.map(msg =>
@@ -470,7 +528,7 @@ export class ChatComponent implements OnInit {
             });
           }
           this.pendingFrontendToolCalls = [];
-          this.agent.addMessages(toolMessages);
+          this.agent?.addMessages(toolMessages);
           await this.runAgent();
         } else {
           this.status.set('Ready to chat');
@@ -491,7 +549,7 @@ export class ChatComponent implements OnInit {
 
     this.newMessageViewModel.update(vm => ({ ...vm, content: '' }));
     this.messages.update(msgs => [...msgs, { role: 'user', content: newMessage }]);
-    this.agent.addMessages([{ id: "", role: 'user', content: newMessage }]);
+    this.agent?.addMessages([{ id: "", role: 'user', content: newMessage }]);
     this.scrollToBottom();
 
     await this.runAgent();
@@ -509,7 +567,7 @@ export class ChatComponent implements OnInit {
           parameters: t.inputSchema,
         }))
       };
-      await this.agent.runAgent(parameters);
+      await this.agent?.runAgent(parameters);
     } catch (error) {
       console.error('Error running agent:', error);
       this.messages.update(msgs => [...msgs, {

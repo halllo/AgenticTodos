@@ -5,6 +5,7 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Agents.AI;
 
 namespace AgenticTodos.Tests;
 
@@ -90,8 +91,9 @@ public class AguiControllerTest
 
         using IChatClient client = new DeterministicChatClient();
         var agent = client.AsAIAgent(name: "Agent", tools: []);
+        var agentProvider = new StaticAgentProvider(agent);
 
-        var controller = new AguiController(agent)
+        var controller = new AguiController(agentProvider)
         {
             ControllerContext = new ControllerContext
             {
@@ -99,7 +101,7 @@ public class AguiControllerTest
             }
         };
 
-        var result = await controller.Agui(CancellationToken.None);
+        var result = await controller.Agui("", CancellationToken.None);
 
         var expectedOutput = """
         data: {"threadId":"08f18960-f2c2-4745-9c5a-06e3e3a8964b","runId":"e89024c7-dfc9-4652-82ad-71a3f183d017","type":"RUN_STARTED"}
@@ -265,6 +267,11 @@ public class AguiControllerTest
         }
     }
 
+    private sealed class StaticAgentProvider(AIAgent agent) : IAgentProvider
+    {
+        public AIAgent? Get(string alias) => agent;
+        public IReadOnlyList<string> GetAliases() => [nameof(agent)];
+    }
 
     private sealed class DeterministicChatClient : IChatClient
     {

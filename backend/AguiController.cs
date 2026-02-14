@@ -7,20 +7,42 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Options;
 
-[ApiController]
-[Route("agui")]
-public class AguiController([FromKeyedServices("mainagent")] AIAgent agent) : ControllerBase
+public interface IAgentProvider
 {
+    IReadOnlyList<string> GetAliases();
+    AIAgent? Get(string alias);
+}
+
+public class AgentProvider(IServiceProvider services) : IAgentProvider
+{
+    public IReadOnlyList<string> GetAliases() => services.GetRequiredKeyedService<List<string>>("agentAliases");
+    public AIAgent? Get(string alias) => services.GetRequiredKeyedService<AIAgent>(alias);
+}
+
+[ApiController]
+[Route("agents")]
+public class AguiController(IAgentProvider agents) : ControllerBase
+{
+    [HttpGet]
+    public async Task<IResult> List(CancellationToken cancellationToken)
+    {
+        return Results.Ok(agents.GetAliases());
+    }
+
     /// <summary>
     /// Inlined from https://github.com/microsoft/agent-framework/blob/main/dotnet/src/Microsoft.Agents.AI.Hosting.AGUI.AspNetCore/AGUIEndpointRouteBuilderExtensions.cs
     /// </summary>
-    [HttpPost]
-    public async Task<IResult> Agui(CancellationToken cancellationToken)
+    [HttpPost("{alias}/agui")]
+    public async Task<IResult> Agui(string alias, CancellationToken cancellationToken)
     {
-        var jsonOptions = HttpContext.RequestServices.GetRequiredService<IOptions<Microsoft.AspNetCore.Http.Json.JsonOptions>>();
-        var jsonSerializerOptions = jsonOptions.Value.SerializerOptions;
+        var agent = agents.Get(alias);
+        if (agent is null)
+        {
+            return Results.NotFound($"'{alias}' not found");
+        }
 
-        var input = await AguiRunAgentInputCompatible.Parse(HttpContext.Request, jsonSerializerOptions, cancellationToken);
+        // Parse the incoming AG-UI request
+        var input = await AguiReflector.Parse(HttpContext, cancellationToken);
         if (input is null)
         {
             return Results.BadRequest();
@@ -56,200 +78,208 @@ public class AguiController([FromKeyedServices("mainagent")] AIAgent agent) : Co
             .AsAGUIEventStreamAsync(
                 input.ThreadId,
                 input.RunId,
-                jsonSerializerOptions,
+                input.JsonSerializerOptions,
                 cancellationToken);
 
-        var outputType = Type.GetType("Microsoft.Agents.AI.Hosting.AGUI.AspNetCore.AGUIServerSentEventsResult, Microsoft.Agents.AI.Hosting.AGUI.AspNetCore", throwOnError: true)!;
-        var loggerFactory = HttpContext.RequestServices.GetRequiredService<ILoggerFactory>();
-        var sseLogger = loggerFactory.CreateLogger(outputType);
-
         var output = AguiReflector.CreateAguiServerSentEventsResult(
-            outputType,
             events,
-            jsonSerializerOptions,
-            sseLogger,
+            input.JsonSerializerOptions,
             cancellationToken,
             HttpContext.RequestServices);
 
-        return (IResult)output;
+        return output;
     }
 }
-
-internal sealed class AguiRunAgentInputCompatible
-{
-    private AguiRunAgentInputCompatible(
-        string threadId,
-        string runId,
-        IReadOnlyList<ChatMessage> messages,
-        List<AITool> tools,
-        object? state,
-        object? forwardedProperties,
-        KeyValuePair<string, string>[]? context)
-    {
-        ThreadId = threadId;
-        RunId = runId;
-        Messages = messages;
-        Tools = tools;
-        State = state;
-        ForwardedProperties = forwardedProperties;
-        Context = context;
-    }
-
-    public string ThreadId { get; }
-    public string RunId { get; }
-
-    public object? State { get; }
-    public object? ForwardedProperties { get; }
-    public KeyValuePair<string, string>[]? Context { get; }
-
-    public IReadOnlyList<ChatMessage> Messages { get; }
-    public List<AITool> Tools { get; }
-
-    public static async Task<AguiRunAgentInputCompatible?> Parse(
-        HttpRequest request,
-        JsonSerializerOptions jsonSerializerOptions,
-        CancellationToken cancellationToken)
-    {
-        var inputType = Type.GetType(
-            "Microsoft.Agents.AI.Hosting.AGUI.AspNetCore.Shared.RunAgentInput, Microsoft.Agents.AI.Hosting.AGUI.AspNetCore",
-            throwOnError: true)!;
-
-        object? input;
-        try
-        {
-            input = await JsonSerializer.DeserializeAsync(
-                utf8Json: request.Body,
-                returnType: inputType,
-                options: jsonSerializerOptions,
-                cancellationToken: cancellationToken);
-        }
-        catch (JsonException)
-        {
-            return null;
-        }
-
-        if (input is null)
-        {
-            return null;
-        }
-
-        var messagesProp = inputType.GetProperty("Messages");
-        var toolsProp = inputType.GetProperty("Tools");
-        var stateProp = inputType.GetProperty("State");
-        var contextProp = inputType.GetProperty("Context");
-        var threadIdProp = inputType.GetProperty("ThreadId");
-        var runIdProp = inputType.GetProperty("RunId");
-
-        // Property name differs across preview versions and/or JSON naming policies.
-        var forwardedPropsProp = inputType.GetProperty("ForwardedProperties") ?? inputType.GetProperty("ForwardedProps");
-
-        var aguiMessages = messagesProp?.GetValue(input);
-        if (aguiMessages is null)
-        {
-            return null;
-        }
-
-        var parsedMessages = AguiReflector.AsChatMessages(aguiMessages, jsonSerializerOptions).ToList();
-
-        var toolDefinitions = BuildTools(toolsProp?.GetValue(input));
-        var parsedTools = toolDefinitions
-            .Select(t => AIFunctionFactory.CreateDeclaration(name: t.Name, description: t.Description, jsonSchema: t.Parameters))
-            .Cast<AITool>()
-            .ToList();
-
-        var context = BuildContextPairs(contextProp?.GetValue(input));
-
-        return new AguiRunAgentInputCompatible(
-            threadId: threadIdProp?.GetValue(input) as string ?? string.Empty,
-            runId: runIdProp?.GetValue(input) as string ?? string.Empty,
-            messages: parsedMessages,
-            tools: parsedTools,
-            state: stateProp?.GetValue(input),
-            forwardedProperties: forwardedPropsProp?.GetValue(input),
-            context: context);
-    }
-
-    private static IReadOnlyList<AguiToolCompatible> BuildTools(object? toolsObj)
-    {
-        if (toolsObj is null)
-        {
-            return [];
-        }
-
-        if (toolsObj is not IEnumerable enumerable)
-        {
-            return [];
-        }
-
-        var tools = new List<AguiToolCompatible>();
-        foreach (var item in enumerable)
-        {
-            if (item is null)
-            {
-                continue;
-            }
-
-            var itemType = item.GetType();
-
-            var name = itemType.GetProperty("Name")?.GetValue(item) as string ?? string.Empty;
-            var description = itemType.GetProperty("Description")?.GetValue(item) as string ?? string.Empty;
-
-            var parametersObj = itemType.GetProperty("Parameters")?.GetValue(item);
-            var parameters = parametersObj switch
-            {
-                JsonElement je => je,
-                JsonDocument jd => jd.RootElement.Clone(),
-                _ => default
-            };
-
-            tools.Add(new AguiToolCompatible(name, description, parameters));
-        }
-
-        return tools;
-    }
-
-    private static KeyValuePair<string, string>[]? BuildContextPairs(object? contextObj)
-    {
-        if (contextObj is null)
-        {
-            return null;
-        }
-
-        if (contextObj is not IEnumerable enumerable)
-        {
-            return null;
-        }
-
-        var items = new List<KeyValuePair<string, string>>();
-        foreach (var item in enumerable)
-        {
-            if (item is null)
-            {
-                continue;
-            }
-
-            var itemType = item.GetType();
-            var description = itemType.GetProperty("Description")?.GetValue(item) as string ?? string.Empty;
-            var value = itemType.GetProperty("Value")?.GetValue(item) as string ?? string.Empty;
-            items.Add(new KeyValuePair<string, string>(description, value));
-        }
-
-        return items.Count == 0 ? null : items.ToArray();
-    }
-}
-
-internal readonly record struct AguiToolCompatible(string Name, string Description, JsonElement Parameters);
 
 public static class AguiReflector
 {
-    public static object CreateAguiServerSentEventsResult(
-        Type resultType,
+    public static Task<Input?> Parse(this HttpContext context, CancellationToken cancellationToken)
+    {
+        var jsonOptions = context.RequestServices.GetRequiredService<IOptions<Microsoft.AspNetCore.Http.Json.JsonOptions>>();
+        var jsonSerializerOptions = jsonOptions.Value.SerializerOptions;
+        return Input.Parse(context.Request, jsonSerializerOptions, cancellationToken);
+    }
+
+    public class Input
+    {
+        private Input(
+            string threadId,
+            string runId,
+            IReadOnlyList<ChatMessage> messages,
+            List<AITool> tools,
+            object? state,
+            object? forwardedProperties,
+            KeyValuePair<string, string>[]? context,
+            JsonSerializerOptions jsonSerializerOptions)
+        {
+            ThreadId = threadId;
+            RunId = runId;
+            Messages = messages;
+            Tools = tools;
+            State = state;
+            ForwardedProperties = forwardedProperties;
+            Context = context;
+            JsonSerializerOptions = jsonSerializerOptions;
+        }
+
+        public string ThreadId { get; }
+        public string RunId { get; }
+
+        public object? State { get; }
+        public object? ForwardedProperties { get; }
+        public KeyValuePair<string, string>[]? Context { get; }
+
+        public IReadOnlyList<ChatMessage> Messages { get; }
+        public List<AITool> Tools { get; }
+
+        public JsonSerializerOptions JsonSerializerOptions { get; }
+
+        public static async Task<Input?> Parse(
+            HttpRequest request,
+            JsonSerializerOptions jsonSerializerOptions,
+            CancellationToken cancellationToken)
+        {
+            var inputType = Type.GetType(
+                "Microsoft.Agents.AI.Hosting.AGUI.AspNetCore.Shared.RunAgentInput, Microsoft.Agents.AI.Hosting.AGUI.AspNetCore",
+                throwOnError: true)!;
+
+            object? input;
+            try
+            {
+                input = await JsonSerializer.DeserializeAsync(
+                    utf8Json: request.Body,
+                    returnType: inputType,
+                    options: jsonSerializerOptions,
+                    cancellationToken: cancellationToken);
+            }
+            catch (JsonException)
+            {
+                return null;
+            }
+
+            if (input is null)
+            {
+                return null;
+            }
+
+            var messagesProp = inputType.GetProperty("Messages");
+            var toolsProp = inputType.GetProperty("Tools");
+            var stateProp = inputType.GetProperty("State");
+            var contextProp = inputType.GetProperty("Context");
+            var threadIdProp = inputType.GetProperty("ThreadId");
+            var runIdProp = inputType.GetProperty("RunId");
+
+            // Property name differs across preview versions and/or JSON naming policies.
+            var forwardedPropsProp = inputType.GetProperty("ForwardedProperties") ?? inputType.GetProperty("ForwardedProps");
+
+            var aguiMessages = messagesProp?.GetValue(input);
+            if (aguiMessages is null)
+            {
+                return null;
+            }
+
+            var parsedMessages = AsChatMessages(aguiMessages, jsonSerializerOptions).ToList();
+
+            var toolDefinitions = BuildTools(toolsProp?.GetValue(input));
+            var parsedTools = toolDefinitions
+                .Select(t => AIFunctionFactory.CreateDeclaration(name: t.Name, description: t.Description, jsonSchema: t.Parameters))
+                .Cast<AITool>()
+                .ToList();
+
+            var context = BuildContextPairs(contextProp?.GetValue(input));
+
+            return new Input(
+                threadId: threadIdProp?.GetValue(input) as string ?? string.Empty,
+                runId: runIdProp?.GetValue(input) as string ?? string.Empty,
+                messages: parsedMessages,
+                tools: parsedTools,
+                state: stateProp?.GetValue(input),
+                forwardedProperties: forwardedPropsProp?.GetValue(input),
+                context: context,
+                jsonSerializerOptions: jsonSerializerOptions);
+        }
+
+        private static IReadOnlyList<AguiToolCompatible> BuildTools(object? toolsObj)
+        {
+            if (toolsObj is null)
+            {
+                return [];
+            }
+
+            if (toolsObj is not IEnumerable enumerable)
+            {
+                return [];
+            }
+
+            var tools = new List<AguiToolCompatible>();
+            foreach (var item in enumerable)
+            {
+                if (item is null)
+                {
+                    continue;
+                }
+
+                var itemType = item.GetType();
+
+                var name = itemType.GetProperty("Name")?.GetValue(item) as string ?? string.Empty;
+                var description = itemType.GetProperty("Description")?.GetValue(item) as string ?? string.Empty;
+
+                var parametersObj = itemType.GetProperty("Parameters")?.GetValue(item);
+                var parameters = parametersObj switch
+                {
+                    JsonElement je => je,
+                    JsonDocument jd => jd.RootElement.Clone(),
+                    _ => default
+                };
+
+                tools.Add(new AguiToolCompatible(name, description, parameters));
+            }
+
+            return tools;
+        }
+
+        private static KeyValuePair<string, string>[]? BuildContextPairs(object? contextObj)
+        {
+            if (contextObj is null)
+            {
+                return null;
+            }
+
+            if (contextObj is not IEnumerable enumerable)
+            {
+                return null;
+            }
+
+            var items = new List<KeyValuePair<string, string>>();
+            foreach (var item in enumerable)
+            {
+                if (item is null)
+                {
+                    continue;
+                }
+
+                var itemType = item.GetType();
+                var description = itemType.GetProperty("Description")?.GetValue(item) as string ?? string.Empty;
+                var value = itemType.GetProperty("Value")?.GetValue(item) as string ?? string.Empty;
+                items.Add(new KeyValuePair<string, string>(description, value));
+            }
+
+            return items.Count == 0 ? null : items.ToArray();
+        }
+
+        private readonly record struct AguiToolCompatible(string Name, string Description, JsonElement Parameters);
+    }
+
+    public static IResult CreateAguiServerSentEventsResult(
         IAsyncEnumerable<object> events,
         JsonSerializerOptions jsonSerializerOptions,
-        ILogger sseLogger,
         CancellationToken cancellationToken,
         IServiceProvider services)
     {
+        var resultType = Type.GetType("Microsoft.Agents.AI.Hosting.AGUI.AspNetCore.AGUIServerSentEventsResult, Microsoft.Agents.AI.Hosting.AGUI.AspNetCore", throwOnError: true)!;
+        var loggerFactory = services.GetRequiredService<ILoggerFactory>();
+        var sseLogger = loggerFactory.CreateLogger(resultType);
+
         var ctors = resultType.GetConstructors(
                 BindingFlags.Instance |
                 BindingFlags.Public |
@@ -303,7 +333,7 @@ public static class AguiReflector
 
             try
             {
-                return ctor.Invoke(args!);
+                return (IResult)ctor.Invoke(args!);
             }
             catch
             {
@@ -338,11 +368,11 @@ public static class AguiReflector
         }
     }
 
-    public static IEnumerable<ChatMessage> AsChatMessages(object aguidMessages, JsonSerializerOptions jsonSerializerOptions)
+    private static IEnumerable<ChatMessage> AsChatMessages(object aguidMessages, JsonSerializerOptions jsonSerializerOptions)
     {
         var aGUIChatMessageExtensions = Type.GetType("Microsoft.Agents.AI.Hosting.AGUI.AspNetCore.Shared.AGUIChatMessageExtensions, Microsoft.Agents.AI.Hosting.AGUI.AspNetCore", throwOnError: true);
         var asChatMessages = aGUIChatMessageExtensions!
-            .GetMethods(System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.Static)
+            .GetMethods(BindingFlags.Public | BindingFlags.Static)
             .Single(m =>
                 m.Name == "AsChatMessages" &&
                 m.GetParameters() is { Length: 2 } p &&
@@ -419,39 +449,5 @@ public static class AguiReflector
         {
             yield return @event;
         }
-    }
-
-    public static async Task<object?> AwaitReflectedAsync(object awaitable)
-    {
-        if (awaitable is Task task)
-        {
-            await task;
-            return task.GetType().GetProperty("Result")?.GetValue(task);
-        }
-
-        var type = awaitable.GetType();
-
-        if (type == typeof(ValueTask))
-        {
-            await (ValueTask)awaitable;
-            return null;
-        }
-
-        if (type.IsGenericType && type.GetGenericTypeDefinition() == typeof(ValueTask<>))
-        {
-            var asTask = type.GetMethod("AsTask", Type.EmptyTypes);
-            var taskObj = asTask!.Invoke(awaitable, null);
-            if (taskObj is not Task awaitedTask)
-            {
-                throw new InvalidOperationException($"Expected AsTask() to return Task, got {taskObj?.GetType().FullName ?? "null"}");
-            }
-
-            await awaitedTask;
-            var result = taskObj.GetType().GetProperty("Result")?.GetValue(taskObj);
-
-            return result;
-        }
-
-        throw new InvalidOperationException($"Unsupported awaitable type: {type.FullName}");
     }
 }
