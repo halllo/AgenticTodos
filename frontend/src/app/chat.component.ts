@@ -1,7 +1,7 @@
 import { ChangeDetectionStrategy, Component, effect, ElementRef, inject, linkedSignal, resource, signal, viewChild } from '@angular/core';
 import { httpResource } from '@angular/common/http';
 import { HttpAgent, Message, RunAgentParameters } from "@ag-ui/client"
-import { Field, form, required } from '@angular/forms/signals';
+import { form, FormField, required } from '@angular/forms/signals';
 import { WebmcpService } from './webmcp.service';
 
 interface NewMessageViewModel {
@@ -19,7 +19,7 @@ interface MessageViewModel {
 
 @Component({
   selector: 'app-chat',
-  imports: [Field],
+  imports: [FormField],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <div class="chat">
@@ -91,7 +91,7 @@ interface MessageViewModel {
       </div>
 
       <form class="chat__inputRow" (submit)="onSubmit($event)">
-        <input type="text" [field]="newMessageForm.content" placeholder="Type your message..." class="chat__input"/>
+        <input type="text" [formField]="newMessageForm.content" placeholder="Type your message..." class="chat__input"/>
         @if (isLoading()) {
           <button type="button" class="chat__send" (click)="cancelRun()">✋ Stop</button>
         } @else {

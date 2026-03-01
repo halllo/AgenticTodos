@@ -8,22 +8,22 @@ using Microsoft.Extensions.AI;
 /// </summary>
 public class HttpContextRoutingAgent(IHttpContextAccessor httpContextAccessor, Func<HttpContext, ValueTask<AIAgent>> resolveAgent) : AIAgent
 {
-    public override async ValueTask<AgentSession> CreateSessionAsync(CancellationToken cancellationToken = default)
+    protected override async ValueTask<AgentSession> CreateSessionCoreAsync(CancellationToken cancellationToken = default)
     {
         var agent = await GetAgent();
         return await agent.CreateSessionAsync(cancellationToken);
     }
 
-    public override async ValueTask<AgentSession> DeserializeSessionAsync(JsonElement serializedState, JsonSerializerOptions? jsonSerializerOptions = null, CancellationToken cancellationToken = default)
+    protected override async ValueTask<AgentSession> DeserializeSessionCoreAsync(JsonElement serializedState, JsonSerializerOptions? jsonSerializerOptions = null, CancellationToken cancellationToken = default)
     {
         var agent = await GetAgent();
         return await agent.DeserializeSessionAsync(serializedState, jsonSerializerOptions, cancellationToken);
     }
 
-    public override JsonElement SerializeSession(AgentSession session, JsonSerializerOptions? jsonSerializerOptions = null)
+    protected override async ValueTask<JsonElement> SerializeSessionCoreAsync(AgentSession session, JsonSerializerOptions? jsonSerializerOptions = null, CancellationToken cancellationToken = default)
     {
-        var agent = GetAgent().GetAwaiter().GetResult();
-        return agent.SerializeSession(session, jsonSerializerOptions);
+        var agent = await GetAgent();
+        return await agent.SerializeSessionAsync(session, jsonSerializerOptions, cancellationToken);
     }
 
     protected override async Task<AgentResponse> RunCoreAsync(IEnumerable<ChatMessage> messages, AgentSession? session = null, AgentRunOptions? options = null, CancellationToken cancellationToken = default)

@@ -4,7 +4,6 @@ import { Injectable, signal } from '@angular/core';
 // If this is imported only as types elsewhere, TS/Angular can erase it and
 // navigator.modelContext will remain undefined.
 import '@mcp-b/global';
-import type { RegistrationHandle } from '@mcp-b/global';
 
 import { TabClientTransport } from '@mcp-b/transports';
 import { Client } from '@modelcontextprotocol/sdk/client';
@@ -15,12 +14,12 @@ export class WebmcpService {
   private readonly toolsSignal = signal<{ name: string, description: string, inputSchema: any }[]>([]);
   readonly tools = this.toolsSignal.asReadonly();
 
-  private registeredTools: RegistrationHandle[] = [];
+  private registeredTools: string[] = [];
 
   registerTool(registerableTool: { name: string; description: string, inputSchema?: any, execute: (args: Record<string, any>) => Promise<string> }) {
     const webmcp = navigator.modelContext;
     if (webmcp) {
-      const registeredTool = webmcp.registerTool({
+      webmcp.registerTool({
         name: registerableTool.name,
         description: registerableTool.description,
         inputSchema: registerableTool.inputSchema ??
@@ -35,8 +34,8 @@ export class WebmcpService {
           };
         }
       });
-      this.registeredTools.push(registeredTool);
-      console.log("WebMCP tool registered.");
+      this.registeredTools.push(registerableTool.name);
+      console.log("WebMCP tool registered", registerableTool.name);
     } else {
       console.log("WebMCP context not found; tool not registered.", navigator.modelContext);
     }
@@ -45,7 +44,7 @@ export class WebmcpService {
   unregisterTools() {
     for (const handle of this.registeredTools) {
       try {
-        handle.unregister();
+        navigator.modelContext?.unregisterTool(handle);
       } catch {
         // ignore cleanup errors
       }
@@ -75,10 +74,6 @@ export class WebmcpService {
       console.log('Available tools:', tools);
     } catch (error) {
       console.error('Error fetching tools. Likely a TabClientTransport collision.', error);
-      console.log('Falling back to mcpBridge.tools...');
-      const tools = [...window.__mcpBridge?.tools.values() ?? []];
-      this.toolsSignal.set(tools);
-      console.log('Available tools:', tools);
     }
   }
 
@@ -123,4 +118,3 @@ export class WebmcpService {
       : undefined;
   }
 }
-

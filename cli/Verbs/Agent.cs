@@ -42,12 +42,12 @@ namespace AgenticTodos.Backend.Cli.Verbs
                 httpClient,
                 serverUrl);
 
-            AIAgent agent = chatClient.CreateAIAgent(
+            AIAgent agent = chatClient.AsAIAgent(
                 name: "agui-client",
                 description: "AG-UI Client Agent",
                 tools: [changeBackground]);
 
-            AgentThread thread = agent.GetNewThread();
+            AgentSession thread = await agent.CreateSessionAsync();
             List<ChatMessage> messages = [new(ChatRole.System, "You are a helpful assistant.")];
             try
             {
@@ -73,7 +73,7 @@ namespace AgenticTodos.Backend.Cli.Verbs
                     bool isFirstUpdate = true;
                     string? threadId = null;
                     var updates = new List<ChatResponseUpdate>();
-                    await foreach (AgentRunResponseUpdate update in agent.RunStreamingAsync(messages, thread, cancellationToken: cancellationToken))
+                    await foreach (AgentResponseUpdate update in agent.RunStreamingAsync(messages, thread, cancellationToken: cancellationToken))
                     {
                         // Use AsChatResponseUpdate to access ChatResponseUpdate properties
                         ChatResponseUpdate chatUpdate = update.AsChatResponseUpdate();
