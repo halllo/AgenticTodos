@@ -5,7 +5,7 @@ using Microsoft.Agents.AI.AGUI;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 
-namespace AgenticTodos.Backend.Cli.Verbs
+namespace AgenticTodos.Cli.Verbs
 {
     /// <summary>
     /// Taken from https://github.com/microsoft/agent-framework/blob/main/dotnet/samples/AGUIClientServer/AGUIClient/Program.cs
@@ -13,12 +13,18 @@ namespace AgenticTodos.Backend.Cli.Verbs
     [Verb("agent", HelpText = "Invoke the agent.")]
     class Agent
     {
+        [Value(0, MetaName = "prompt", HelpText = "Initial prompt for the agent", Required = true)]
+        public string? Prompt { get; set; }
+
+        [Option("state", HelpText = "Initial state as JSON, e.g. '{\"conversation\":{\"selectedResources\":[\"a.txt\"],\"metadata\":{}}}'")]
+        public string? State { get; set; }
+
         public async Task Do(ILogger<Agent> logger)
         {
             var cancellationToken = CancellationToken.None;
-            var serverUrl = 
-                "http://localhost:5288/amazonbedrock/agui"
-                //"http://localhost:5288/openai/agui"
+            var serverUrl =
+                "http://localhost:5288/agents/static/amazonbedrock/agui"
+                // "http://localhost:5288/agents/static/openai/agui"
                 ;
             logger.LogInformation("Connecting to AG-UI server at: {ServerUrl}", serverUrl);
 
@@ -49,13 +55,27 @@ namespace AgenticTodos.Backend.Cli.Verbs
 
             AgentSession thread = await agent.CreateSessionAsync();
             List<ChatMessage> messages = [new(ChatRole.System, "You are a helpful assistant.")];
+            string? firstUserMessage = Prompt;
+            // currentStateBytes holds the last STATE_SNAPSHOT bytes received from the server.
+            // Per the AG-UI C# client docs, state is sent as DataContent("application/json") in
+            // a ChatRole.System message, which the AG-UI hosting layer extracts into ag_ui_state.
+            byte[]? currentStateBytes = State is not null
+                ? JsonSerializer.SerializeToUtf8Bytes(JsonSerializer.Deserialize<JsonElement>(State))
+                : null;
+
             try
             {
                 while (true)
                 {
                     // Get user message
                     Console.Write("\nUser (:q or quit to exit): ");
-                    string? message = Console.ReadLine();
+                    string? message = firstUserMessage ?? Console.ReadLine();
+                    if (firstUserMessage != null)
+                    {
+                        Console.WriteLine(firstUserMessage);
+                        firstUserMessage = null;
+                    }
+                    if (message is null) break;
                     if (string.IsNullOrWhiteSpace(message))
                     {
                         Console.WriteLine("Request cannot be empty.");
@@ -69,11 +89,16 @@ namespace AgenticTodos.Backend.Cli.Verbs
 
                     messages.Add(new(ChatRole.User, message));
 
-                    // Call RunStreamingAsync to get streaming updates
+                    // Per AG-UI C# client docs, state is sent as DataContent("application/json")
+                    // in a ChatRole.System message. The hosting layer extracts it into ag_ui_state.
+                    if (currentStateBytes is not null)
+                        messages.Add(new(ChatRole.System, [new DataContent(currentStateBytes, "application/json")]));
+
+                    var runOptions = new ChatClientAgentRunOptions();
                     bool isFirstUpdate = true;
                     string? threadId = null;
                     var updates = new List<ChatResponseUpdate>();
-                    await foreach (AgentResponseUpdate update in agent.RunStreamingAsync(messages, thread, cancellationToken: cancellationToken))
+                    await foreach (AgentResponseUpdate update in agent.RunStreamingAsync(messages, thread, runOptions, cancellationToken: cancellationToken))
                     {
                         // Use AsChatResponseUpdate to access ChatResponseUpdate properties
                         ChatResponseUpdate chatUpdate = update.AsChatResponseUpdate();
@@ -140,7 +165,30 @@ namespace AgenticTodos.Backend.Cli.Verbs
                         Console.WriteLine($"[Run Ended - Thread: {threadId}, Run: {lastUpdate.ResponseId}]");
                         Console.ResetColor();
                     }
-                    //messages.Clear();
+
+                    // Capture STATE_SNAPSHOT from response updates.
+                    // AGUIChatClient surfaces STATE_SNAPSHOT as DataContent("application/json").
+                    foreach (var u in updates)
+                    {
+                        foreach (var content in u.Contents.OfType<DataContent>())
+                        {
+                            if (content.MediaType == "application/json" && content.Data is { } data)
+                            {
+                                currentStateBytes = data.ToArray();
+                                var stateJson = JsonSerializer.Deserialize<JsonElement>(data.Span);
+                                Console.ForegroundColor = ConsoleColor.DarkGray;
+                                Console.WriteLine($"[State: {stateJson}]");
+                                Console.ResetColor();
+                            }
+                        }
+                    }
+
+                    // Remove the ephemeral state system message so it isn't re-sent as history
+                    messages.RemoveAll(m => m.Role == ChatRole.System
+                        && m.Contents.Any(c => c is DataContent dc && dc.MediaType == "application/json"));
+
+                    var chatResponse = updates.ToChatResponse();
+                    messages.AddRange(chatResponse.Messages);
                     Console.WriteLine();
                 }
             }

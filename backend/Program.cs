@@ -128,6 +128,7 @@ static AIAgent CreateAgent(IChatClient chatClient, AIFunction[] tools, IServiceP
         .AsBuilder()
         .UseOpenTelemetry(sourceName: applicationName, configure: c => c.EnableSensitiveData = true)
         .Build(services)
+        .WrapWithStateSnapshot()
         ;
 }
 

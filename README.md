@@ -6,6 +6,48 @@ This experimental application aims to explore the following technologies:
 - AG-UI
 - WebMCP
 
+## Development
+
+The system needs OpenAI and/or Amazon Bedrock credentials. Lets focus on AWS:
+
+```bash
+aws iam create-user --user-name agents-experiments
+aws iam attach-user-policy --user-name agents-experiments --policy-arn arn:aws:iam::aws:policy/AmazonBedrockFullAccess
+aws iam create-access-key --user-name agents-experiments
+```
+
+These secrets are managed by dotnet:
+
+```bash
+cd backend
+dotnet user-secrets set AWSBedrockAccessKeyId ...
+dotnet user-secrets set AWSBedrockSecretAccessKey ...
+```
+
+Then run the backend and frontend locally:
+
+```bash
+aspire run
+```
+
+We can test AG-UI with the backend using the CLI:
+
+```bash
+cd cli
+dotnet run -- agent "Your prompt here"
+```
+
+### State round-trip via CLI
+
+The AG-UI protocol supports round-tripping arbitrary state between client and server via `STATE_SNAPSHOT` events. Use `--state` to seed an initial `ConversationState` (selected resources and metadata). The server injects it as context for the LLM and echoes it back each turn — the CLI captures the snapshot and resends it automatically on subsequent turns.
+
+```bash
+dotnet run -- agent "What files do I have selected?" \
+  --state '{"conversation":{"selectedResources":["readme.md","notes.txt"],"metadata":{"project":"AgenticTodos"}}}'
+```
+
+The `[State: ...]` line printed after each response shows the current round-tripped state. To extend the state schema, update [`ConversationState`](backend/ConversationState.cs) on the backend and populate `StoreAIContextAsync` in [`StateSnapshotEmittingAgent`](backend/StateSnapshotEmittingAgent.cs) to mutate state server-side based on agent responses.
+
 ## Problems
 
 ### ✅ AmazonBedrockRuntimeClient does not support AdditionalProperties
