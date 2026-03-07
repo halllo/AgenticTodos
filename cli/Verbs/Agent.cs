@@ -4,6 +4,8 @@ using Microsoft.Agents.AI;
 using Microsoft.Agents.AI.AGUI;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
+using Spectre.Console;
+using Spectre.Console.Json;
 
 namespace AgenticTodos.Cli.Verbs
 {
@@ -56,19 +58,15 @@ namespace AgenticTodos.Cli.Verbs
             AgentSession thread = await agent.CreateSessionAsync();
             List<ChatMessage> messages = [new(ChatRole.System, "You are a helpful assistant.")];
             string? firstUserMessage = Prompt;
-            // currentStateBytes holds the last STATE_SNAPSHOT bytes received from the server.
-            // Per the AG-UI C# client docs, state is sent as DataContent("application/json") in
-            // a ChatRole.System message, which the AG-UI hosting layer extracts into ag_ui_state.
-            byte[]? currentStateBytes = State is not null
-                ? JsonSerializer.SerializeToUtf8Bytes(JsonSerializer.Deserialize<JsonElement>(State))
-                : null;
+
+            JsonElement? currentState = State is not null ? JsonSerializer.Deserialize<JsonElement>(State) : null;
 
             try
             {
                 while (true)
                 {
                     // Get user message
-                    Console.Write("\nUser (:q or quit to exit): ");
+                    AnsiConsole.Markup("\n[dim]User:[/] ");
                     string? message = firstUserMessage ?? Console.ReadLine();
                     if (firstUserMessage != null)
                     {
@@ -89,10 +87,12 @@ namespace AgenticTodos.Cli.Verbs
 
                     messages.Add(new(ChatRole.User, message));
 
-                    // Per AG-UI C# client docs, state is sent as DataContent("application/json")
-                    // in a ChatRole.System message. The hosting layer extracts it into ag_ui_state.
-                    if (currentStateBytes is not null)
-                        messages.Add(new(ChatRole.System, [new DataContent(currentStateBytes, "application/json")]));
+                    // Include current state
+                    ChatMessage? currentStateMessage = currentState is not null ? new(ChatRole.System, [new DataContent(JsonSerializer.SerializeToUtf8Bytes(currentState.Value), "application/json")]) : null;
+                    if (currentStateMessage is not null)
+                    {
+                        messages.Add(currentStateMessage);
+                    }
 
                     var runOptions = new ChatClientAgentRunOptions();
                     bool isFirstUpdate = true;
@@ -103,93 +103,76 @@ namespace AgenticTodos.Cli.Verbs
                         // Use AsChatResponseUpdate to access ChatResponseUpdate properties
                         ChatResponseUpdate chatUpdate = update.AsChatResponseUpdate();
                         updates.Add(chatUpdate);
+
                         if (chatUpdate.ConversationId != null)
                         {
                             threadId = chatUpdate.ConversationId;
                         }
 
                         // Display run started information from the first update
-                        if (isFirstUpdate && threadId != null && update.ResponseId != null)
+                        if (isFirstUpdate && threadId != null && chatUpdate.ResponseId != null)
                         {
-                            Console.ForegroundColor = ConsoleColor.Yellow;
-                            Console.WriteLine($"\n[Run Started - Thread: {threadId}, Run: {update.ResponseId}]");
-                            Console.ResetColor();
+                            AnsiConsole.MarkupLine($"\n[dim]{Markup.Escape($"[Run Started - Thread: {threadId}, Run: {chatUpdate.ResponseId}]")}[/]");
                             isFirstUpdate = false;
                         }
 
                         // Display different content types with appropriate formatting
-                        foreach (AIContent content in update.Contents)
+                        List<AIContent> omitContents = [];
+                        foreach (AIContent content in chatUpdate.Contents)
                         {
-                            //Console.WriteLine($"[Content {content.GetType().Name} received]");
                             switch (content)
                             {
                                 case TextContent textContent:
-                                    Console.ForegroundColor = ConsoleColor.Cyan;
-                                    Console.Write(textContent.Text);
-                                    Console.ResetColor();
+                                    AnsiConsole.Markup($"[cyan]{Markup.Escape(textContent.Text)}[/]");
                                     break;
 
                                 case FunctionCallContent functionCallContent:
-                                    Console.ForegroundColor = ConsoleColor.Green;
-                                    Console.WriteLine($"\n[Function Call - Name: {functionCallContent.Name}, Arguments: {JsonSerializer.Serialize(functionCallContent.Arguments)}]");
-                                    Console.ResetColor();
+                                    AnsiConsole.MarkupLine($"\n[green]{Markup.Escape($"[Function Call - Name: {functionCallContent.Name}, Arguments: {JsonSerializer.Serialize(functionCallContent.Arguments)}]")}[/]");
                                     break;
 
                                 case FunctionResultContent functionResultContent:
-                                    Console.ForegroundColor = ConsoleColor.Magenta;
                                     if (functionResultContent.Exception != null)
                                     {
-                                        Console.WriteLine($"\n[Function Result - Exception: {functionResultContent.Exception}]");
+                                        AnsiConsole.MarkupLine($"\n[magenta]{Markup.Escape($"[Function Result - Exception: {functionResultContent.Exception}]")}[/]");
                                     }
                                     else
                                     {
-                                        Console.WriteLine($"\n[Function Result - Result: {functionResultContent.Result}]");
+                                        AnsiConsole.MarkupLine($"\n[magenta]{Markup.Escape($"[Function Result - Result: {functionResultContent.Result}]")}[/]");
                                     }
-                                    Console.ResetColor();
                                     break;
 
                                 case ErrorContent errorContent:
-                                    Console.ForegroundColor = ConsoleColor.Red;
                                     string code = errorContent.AdditionalProperties?["Code"] as string ?? "Unknown";
-                                    Console.WriteLine($"\n[Error - Code: {code}, Message: {errorContent.Message}]");
-                                    Console.ResetColor();
+                                    AnsiConsole.MarkupLine($"\n[red]{Markup.Escape($"[Error - Code: {code}, Message: {errorContent.Message}]")}[/]");
+                                    break;
+
+                                case DataContent { MediaType: "application/json" } dataContent when dataContent.Data is { } data:
+                                    currentState = JsonSerializer.Deserialize<JsonElement>(data.Span);
+                                    AnsiConsole.Markup($"\n[dim]{Markup.Escape("[State: ")}[/]");
+                                    AnsiConsole.Write(new JsonText(currentState?.ToString() ?? "null"));
+                                    AnsiConsole.Markup($"[dim]{Markup.Escape("]")}[/]");
+                                    omitContents.Add(content); // Mark state snapshot content to be omitted from message history
                                     break;
                             }
                         }
+
+                        omitContents.ForEach(c => chatUpdate.Contents.Remove(c));
                     }
+
                     if (updates.Count > 0 && !updates[^1].Contents.Any(c => c is TextContent))
                     {
                         var lastUpdate = updates[^1];
-                        Console.ForegroundColor = ConsoleColor.Yellow;
-                        Console.WriteLine();
-                        Console.WriteLine($"[Run Ended - Thread: {threadId}, Run: {lastUpdate.ResponseId}]");
-                        Console.ResetColor();
+                        AnsiConsole.MarkupLine($"\n[dim]{Markup.Escape($"[Run Ended - Thread: {threadId}, Run: {lastUpdate.ResponseId}]")}[/]");
                     }
 
-                    // Capture STATE_SNAPSHOT from response updates.
-                    // AGUIChatClient surfaces STATE_SNAPSHOT as DataContent("application/json").
-                    foreach (var u in updates)
-                    {
-                        foreach (var content in u.Contents.OfType<DataContent>())
-                        {
-                            if (content.MediaType == "application/json" && content.Data is { } data)
-                            {
-                                currentStateBytes = data.ToArray();
-                                var stateJson = JsonSerializer.Deserialize<JsonElement>(data.Span);
-                                Console.ForegroundColor = ConsoleColor.DarkGray;
-                                Console.WriteLine($"[State: {stateJson}]");
-                                Console.ResetColor();
-                            }
-                        }
-                    }
-
-                    // Remove the ephemeral state system message so it isn't re-sent as history
-                    messages.RemoveAll(m => m.Role == ChatRole.System
-                        && m.Contents.Any(c => c is DataContent dc && dc.MediaType == "application/json"));
-
+                    // Prepare messages for the next turn by removing state related snapshots
                     var chatResponse = updates.ToChatResponse();
-                    messages.AddRange(chatResponse.Messages);
-                    Console.WriteLine();
+                    var messagesWithContents = chatResponse.Messages.Where(m => m.Contents.Any());
+                    messages.AddRange(messagesWithContents);
+                    if (currentStateMessage is not null)
+                    {
+                        messages.Remove(currentStateMessage);
+                    }
                 }
             }
             catch (OperationCanceledException)

@@ -2,12 +2,27 @@ using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
 using System.Runtime.CompilerServices;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 
 namespace AgenticTodos.Backend;
 
 public static class StateSnapshotEmittingAgentExtensions
 {
     public static AIAgent WrapWithStateSnapshot(this AIAgent inner) => new StateSnapshotEmittingAgent(inner);
+}
+
+/// <summary>
+/// Custom state that is round-tripped via the AG-UI STATE_SNAPSHOT mechanism.
+/// The client sends this back in RunAgentInput.state on every turn,
+/// and StateSnapshotEmittingAgent reads it and injects it as a system message.
+/// </summary>
+public class ConversationState
+{
+    [JsonPropertyName("selectedResources")]
+    public List<string> SelectedResources { get; set; } = [];
+
+    [JsonPropertyName("metadata")]
+    public Dictionary<string, string> Metadata { get; set; } = [];
 }
 
 /// <summary>
@@ -33,6 +48,8 @@ public class StateSnapshotEmittingAgent(AIAgent inner) : DelegatingAIAgent(inner
         var augmentedMessages = state is not null
             ? PrependStateMessage(messages, state)
             : messages;
+
+        options?.AdditionalProperties?["my_state"] = state;
 
         await foreach (var update in InnerAgent.RunStreamingAsync(augmentedMessages, session, options, cancellationToken))
             yield return update;
