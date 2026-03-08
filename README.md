@@ -43,10 +43,10 @@ The AG-UI protocol supports round-tripping arbitrary state between client and se
 
 ```bash
 dotnet run -- agent "What files do I have selected?" \
-  --state '{"conversation":{"selectedResources":["readme.md","notes.txt"],"metadata":{"project":"AgenticTodos"}}}'
+  --state '{"conversation":{"selectedResources":["readme.md","notes.txt"],"counter":0}}'
 ```
 
-The `[State: ...]` line printed after each response shows the current round-tripped state. To extend the state schema, update [`ConversationState`](backend/ConversationState.cs) on the backend and populate `StoreAIContextAsync` in [`StateSnapshotEmittingAgent`](backend/StateSnapshotEmittingAgent.cs) to mutate state server-side based on agent responses.
+The `[State: ...]` line printed after each response shows the current round-tripped state. On the server the state is managed by [`StateSnapshotMiddleware`](backend/StateSnapshotMiddleware.cs).
 
 ## Problems
 
@@ -97,11 +97,11 @@ The official `.MapAGUI()` methods require an `AIAgent` object to be passed in. T
 
 I started a PR to allow for a request-level callback which allows deferred agent selection:
 
-https://github.com/microsoft/agent-framework/pull/2343
+<https://github.com/microsoft/agent-framework/pull/2343>
 
 Now there is even another PR:
 
-https://github.com/microsoft/agent-framework/pull/3162
+<https://github.com/microsoft/agent-framework/pull/3162>
 
 Merge hesitancy comes from perceived inconsistency risks regarding A2A.
 

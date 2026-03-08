@@ -1,3 +1,4 @@
+using System.Runtime.CompilerServices;
 using System.Text.Json;
 using CommandLine;
 using Microsoft.Agents.AI;
@@ -9,13 +10,10 @@ using Spectre.Console.Json;
 
 namespace AgenticTodos.Cli.Verbs
 {
-    /// <summary>
-    /// Taken from https://github.com/microsoft/agent-framework/blob/main/dotnet/samples/AGUIClientServer/AGUIClient/Program.cs
-    /// </summary>
     [Verb("agent", HelpText = "Invoke the agent.")]
     class Agent
     {
-        [Value(0, MetaName = "prompt", HelpText = "Initial prompt for the agent", Required = true)]
+        [Value(0, MetaName = "prompt", HelpText = "Initial prompt for the agent", Required = false)]
         public string? Prompt { get; set; }
 
         [Option("state", HelpText = "Initial state as JSON, e.g. '{\"conversation\":{\"selectedResources\":[\"a.txt\"],\"metadata\":{}}}'")]
@@ -36,6 +34,47 @@ namespace AgenticTodos.Cli.Verbs
                 Timeout = TimeSpan.FromSeconds(60)
             };
 
+            IChatClient chatClient = new AGUIChatClient(
+                httpClient,
+                serverUrl)
+                .AsBuilder()
+                .Build()
+                ;
+
+            JsonElement? currentState = State is not null ? JsonSerializer.Deserialize<JsonElement>(State) : null;
+            async IAsyncEnumerable<AgentResponseUpdate> StateInjectionMiddleware(
+                IEnumerable<ChatMessage> messages,
+                AgentSession? session,
+                AgentRunOptions? options,
+                AIAgent innerAgent,
+                [EnumeratorCancellation] CancellationToken cancellationToken)
+            {
+                if (currentState != null)
+                {
+                    var stateMessage = new ChatMessage(ChatRole.System, [new DataContent(JsonSerializer.SerializeToUtf8Bytes(currentState), "application/json")]);
+                    messages = messages.Append(stateMessage);
+                }
+                await foreach (var update in innerAgent.RunStreamingAsync(messages, session, options, cancellationToken))
+                {
+                    var stateSnapshots = update.Contents.OfType<DataContent>().Where(c => c.MediaType == "application/json");
+                    if (stateSnapshots.Any())
+                    {
+                        foreach (var dataContent in stateSnapshots)
+                        {
+                            var newState = JsonSerializer.Deserialize<JsonElement>(dataContent.Data.Span);
+                            AnsiConsole.Markup($"\n[dim]{Markup.Escape("[State: ")}[/]");
+                            AnsiConsole.Write(new JsonText(newState.ToString()));
+                            AnsiConsole.Markup($"[dim]{Markup.Escape("]")}[/]");
+                            currentState = newState; // If there are multiple state snapshots, take the last one as the current state
+                        }
+                    }
+                    else
+                    {
+                        yield return update;
+                    }
+                }
+            }
+
             var changeBackground = AIFunctionFactory.Create(
                 () =>
                 {
@@ -46,20 +85,18 @@ namespace AgenticTodos.Cli.Verbs
                 description: "Change the console background color to dark blue."
             );
 
-            var chatClient = new AGUIChatClient(
-                httpClient,
-                serverUrl);
-
             AIAgent agent = chatClient.AsAIAgent(
                 name: "agui-client",
                 description: "AG-UI Client Agent",
-                tools: [changeBackground]);
+                tools: [changeBackground])
+                .AsBuilder()
+                .Use(runFunc: null, runStreamingFunc: StateInjectionMiddleware)
+                .Build()
+                ;
 
             AgentSession thread = await agent.CreateSessionAsync();
             List<ChatMessage> messages = [new(ChatRole.System, "You are a helpful assistant.")];
             string? firstUserMessage = Prompt;
-
-            JsonElement? currentState = State is not null ? JsonSerializer.Deserialize<JsonElement>(State) : null;
 
             try
             {
@@ -87,13 +124,6 @@ namespace AgenticTodos.Cli.Verbs
 
                     messages.Add(new(ChatRole.User, message));
 
-                    // Include current state
-                    ChatMessage? currentStateMessage = currentState is not null ? new(ChatRole.System, [new DataContent(JsonSerializer.SerializeToUtf8Bytes(currentState.Value), "application/json")]) : null;
-                    if (currentStateMessage is not null)
-                    {
-                        messages.Add(currentStateMessage);
-                    }
-
                     var runOptions = new ChatClientAgentRunOptions();
                     bool isFirstUpdate = true;
                     string? threadId = null;
@@ -117,7 +147,6 @@ namespace AgenticTodos.Cli.Verbs
                         }
 
                         // Display different content types with appropriate formatting
-                        List<AIContent> omitContents = [];
                         foreach (AIContent content in chatUpdate.Contents)
                         {
                             switch (content)
@@ -145,18 +174,8 @@ namespace AgenticTodos.Cli.Verbs
                                     string code = errorContent.AdditionalProperties?["Code"] as string ?? "Unknown";
                                     AnsiConsole.MarkupLine($"\n[red]{Markup.Escape($"[Error - Code: {code}, Message: {errorContent.Message}]")}[/]");
                                     break;
-
-                                case DataContent { MediaType: "application/json" } dataContent when dataContent.Data is { } data:
-                                    currentState = JsonSerializer.Deserialize<JsonElement>(data.Span);
-                                    AnsiConsole.Markup($"\n[dim]{Markup.Escape("[State: ")}[/]");
-                                    AnsiConsole.Write(new JsonText(currentState?.ToString() ?? "null"));
-                                    AnsiConsole.Markup($"[dim]{Markup.Escape("]")}[/]");
-                                    omitContents.Add(content); // Mark state snapshot content to be omitted from message history
-                                    break;
                             }
                         }
-
-                        omitContents.ForEach(c => chatUpdate.Contents.Remove(c));
                     }
 
                     if (updates.Count > 0 && !updates[^1].Contents.Any(c => c is TextContent))
@@ -165,14 +184,9 @@ namespace AgenticTodos.Cli.Verbs
                         AnsiConsole.MarkupLine($"\n[dim]{Markup.Escape($"[Run Ended - Thread: {threadId}, Run: {lastUpdate.ResponseId}]")}[/]");
                     }
 
-                    // Prepare messages for the next turn by removing state related snapshots
+                    // Remember messages for the next turn
                     var chatResponse = updates.ToChatResponse();
-                    var messagesWithContents = chatResponse.Messages.Where(m => m.Contents.Any());
-                    messages.AddRange(messagesWithContents);
-                    if (currentStateMessage is not null)
-                    {
-                        messages.Remove(currentStateMessage);
-                    }
+                    messages.AddRange(chatResponse.Messages);
                 }
             }
             catch (OperationCanceledException)

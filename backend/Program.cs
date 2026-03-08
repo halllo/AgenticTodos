@@ -127,9 +127,9 @@ static AIAgent CreateAgent(IChatClient chatClient, AIFunction[] tools, IServiceP
             services: services)
         .AsBuilder()
         .UseOpenTelemetry(sourceName: applicationName, configure: c => c.EnableSensitiveData = true)
-        .Build(services)
-        .WrapWithStateSnapshot()
-        ;
+        .Use(sharedFunc: OmitEmptySystemMessagesMiddleware.Invoke)
+        .Use(runFunc: StateSnapshotMiddleware.RunAsync, runStreamingFunc: StateSnapshotMiddleware.RunStreamingAsync)
+        .Build(services);
 }
 
 static AIFunction[] GetTools()
@@ -140,7 +140,15 @@ static AIFunction[] GetTools()
             {
                 var loggerFactory = services.GetRequiredService<ILoggerFactory>();
                 var logger = loggerFactory.CreateLogger("GetCurrentTimeFunction");
-                logger.LogInformation("GetCurrentTimeFunction called.");
+
+                var state = AIAgent.CurrentRunContext?.RunOptions?.AdditionalProperties?["my_state"] as StateSnapshotMiddleware.ConversationState;
+                if (state != null)
+                {
+                    state.Counter++;
+                }
+
+                logger.LogInformation("GetCurrentTimeFunction called. Counter: {Counter}", state?.Counter);
+
                 return DateTimeOffset.UtcNow;
             },
             name: "get_current_time",
