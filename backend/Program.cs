@@ -1,6 +1,7 @@
 using AgenticTodos.Backend;
 using Amazon.BedrockRuntime;
 using Microsoft.Agents.AI;
+using Microsoft.Agents.AI.DevUI;
 using Microsoft.Agents.AI.Hosting.AGUI.AspNetCore;
 using Microsoft.Extensions.AI;
 using OpenAI;
@@ -10,15 +11,16 @@ var builder = WebApplication.CreateBuilder(args);
 
 OpenTelemetryExtensions.ConfigureOpenTelemetry(builder);
 builder.Services.AddOpenApi();
+builder.Services.AddDevUI();
 builder.Services.AddAGUI();
 builder.Services.AddControllers();
 
 var tools = GetTools();
-builder.Services.AddKeyedScoped("openai", (sp, key) => CreateAgent(
+builder.Services.AddKeyedSingleton("openai", (sp, key) => CreateAgent(
     chatClient: OpenAI(builder.Configuration, builder.Environment.ApplicationName),
     tools: tools,
     services: sp));
-builder.Services.AddKeyedScoped("amazonbedrock", (sp, key) => CreateAgent(
+builder.Services.AddKeyedSingleton("amazonbedrock", (sp, key) => CreateAgent(
     chatClient: AmazonBedrock(builder.Configuration, sp),
     tools: tools,
     services: sp));
@@ -26,7 +28,7 @@ builder.Services.AddKeyedScoped("amazonbedrock", (sp, key) => CreateAgent(
 builder.Services.AddKeyedSingleton("agentAliases", builder.Services
     .Where(sd => sd.IsKeyedService && sd.ServiceType == typeof(AIAgent))
     .Select(sd => sd.ServiceKey?.ToString())
-    .Where(key => key is not null)
+    .Where(key => key is not null && key != "*")
     .Select(key => key!)
     .OrderBy(key => key)
     .ToList());
@@ -49,7 +51,8 @@ var app = builder.Build();
 
 app.MapOpenApi();
 app.MapScalarApiReference();
-app.MapGet("/", () => "Hello World!");
+app.MapDevUI();
+app.MapGet("/", () => "Hello Agents!");
 app.MapGet("/agents", (IAgentProvider agents) => agents.GetAliases());
 
 // Singleton agents with official AGUI endpoints
