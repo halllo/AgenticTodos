@@ -1,6 +1,7 @@
-import { ChangeDetectionStrategy, Component, effect, ElementRef, inject, linkedSignal, resource, signal, viewChild } from '@angular/core';
+import { ChangeDetectionStrategy, Component, effect, ElementRef, inject, linkedSignal, resource, signal, untracked, viewChild } from '@angular/core';
 import { httpResource } from '@angular/common/http';
 import { HttpAgent, Message, RunAgentParameters } from "@ag-ui/client"
+import { JsonPipe } from '@angular/common';
 import { form, FormField, required } from '@angular/forms/signals';
 import { WebmcpService } from './webmcp.service';
 
@@ -19,7 +20,7 @@ interface MessageViewModel {
 
 @Component({
   selector: 'app-chat',
-  imports: [FormField],
+  imports: [FormField, JsonPipe],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <div class="chat">
@@ -90,6 +91,15 @@ interface MessageViewModel {
         }
       </div>
 
+      @if (conversationState()) {
+        <div class="chat__stateRow">
+          <pre class="chat__state">{{ conversationState() | json }}</pre>
+          <div class="chat__stateAdd">
+            <input #resourceInput type="text" class="chat__stateInput" placeholder="Add resource…" />
+            <button type="button" class="chat__stateBtn" (click)="addResource(resourceInput.value); resourceInput.value = ''">+</button>
+          </div>
+        </div>
+      }
       <form class="chat__inputRow" (submit)="onSubmit($event)">
         <input type="text" [formField]="newMessageForm.content" placeholder="Type your message..." class="chat__input"/>
         @if (isLoading()) {
@@ -294,6 +304,44 @@ interface MessageViewModel {
       }
     }
 
+    .chat__stateRow {
+      display: flex;
+      align-items: flex-start;
+      gap: 0.5rem;
+      border-top: 1px solid var(--border);
+    }
+
+    .chat__stateAdd {
+      display: flex;
+      gap: 0.25rem;
+      padding: 4px 4px 4px 0;
+      margin: 4px;
+      flex-shrink: 0;
+    }
+
+    .chat__stateInput {
+      font-size: 0.75rem;
+      padding: 2px 4px;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      background: var(--surface);
+      width: 8rem;
+    }
+
+    .chat__stateBtn {
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      cursor: pointer;
+      background: var(--surface);
+    }
+
+    .chat__state {
+      font-size: 0.5rem;
+      flex: 1;
+      margin: 0;
+      padding: 4px 8px;
+    }
+
     .chat__inputRow {
       display: flex;
       gap: 0.75rem;
@@ -377,6 +425,7 @@ export class ChatComponent {
   protected readonly messages = signal<MessageViewModel[]>([]);
   protected readonly status = signal('Ready to chat');
   protected readonly isLoading = signal(false);
+  protected readonly conversationState = signal<unknown>({ conversation: { selectedResources: [], counter: 0 } });
 
   protected readonly agents = httpResource<string[]>(() => '/agents');
   protected readonly selectedAgent = linkedSignal<string | undefined>(() => this.agents.value()?.[0]);
@@ -406,7 +455,10 @@ export class ChatComponent {
 
   private agent?: HttpAgent;
   private initializeAgent(agentAlias: string): void {
-    const agent = new HttpAgent({ url: `/agents/routed/${agentAlias}/agui` });
+    const agent = new HttpAgent({
+      url: `/agents/routed/${agentAlias}/agui`,
+      initialState: untracked(this.conversationState)
+    });
     agent.subscribe({
       onTextMessageStartEvent: ({ event }) => {
         console.log('Text message started:', event);
@@ -489,6 +541,10 @@ export class ChatComponent {
               : [...msgs, { role: 'assistant', content: event.message, isGenerating: false, error: true }];
           });
         }
+      },
+      onStateSnapshotEvent: ({ event }) => {
+        this.conversationState.set(event.snapshot);
+        return { state: event.snapshot };
       },
       onRunFinishedEvent: async ({ result, event }) => {
         console.log('Run finished', result, event);
@@ -583,6 +639,19 @@ export class ChatComponent {
       this.status.set('Error occurred');
       this.isLoading.set(false);
     }
+  }
+
+  protected addResource(value: string): void {
+    const trimmed = value.trim();
+    if (!trimmed) return;
+    this.conversationState.update((s: any) => ({
+      ...s,
+      conversation: {
+        ...s.conversation,
+        selectedResources: [...(s.conversation?.selectedResources ?? []), trimmed]
+      }
+    }));
+    this.agent?.setState(this.conversationState());
   }
 
   protected cancelRun(): void {
