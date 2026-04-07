@@ -9,12 +9,12 @@
 
   <ItemGroup>
     <PackageReference Include="CommandLineParser" Version="2.9.1" />
-    <PackageReference Include="Microsoft.Agents.AI" Version="1.0.0-rc3" />
-    <PackageReference Include="Microsoft.Agents.AI.AGUI" Version="1.0.0-preview.260304.1" />
-    <PackageReference Include="Microsoft.Extensions.AI" Version="10.3.0" />
-    <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.3" />
-    <PackageReference Include="Spectre.Console" Version="0.54.0" />
-    <PackageReference Include="Spectre.Console.Json" Version="0.54.0" />
+    <PackageReference Include="Microsoft.Agents.AI" Version="1.0.0" />
+    <PackageReference Include="Microsoft.Agents.AI.AGUI" Version="1.0.0-preview.260402.1" />
+    <PackageReference Include="Microsoft.Extensions.AI" Version="10.4.1" />
+    <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.5" />
+    <PackageReference Include="Spectre.Console" Version="0.55.0" />
+    <PackageReference Include="Spectre.Console.Json" Version="0.55.0" />
   </ItemGroup>
 
 </Project>

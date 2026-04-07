@@ -8,6 +8,8 @@ using Microsoft.Extensions.AI;
 /// </summary>
 public class HttpContextRoutingAgent(IHttpContextAccessor httpContextAccessor, Func<HttpContext, ValueTask<AIAgent>> resolveAgent) : AIAgent
 {
+    //TODO: use DelegatingAIAgent to get rid of the boilerplate forwarding!
+
     protected override async ValueTask<AgentSession> CreateSessionCoreAsync(CancellationToken cancellationToken = default)
     {
         var agent = await GetAgent();
