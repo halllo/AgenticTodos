@@ -590,9 +590,11 @@ export class ChatComponent {
             });
           }
           this.pendingFrontendToolCalls = [];
+          this.agent?.setMessages([]); // server supports session management, no need to resend history
           this.agent?.addMessages(toolMessages);
           await this.runAgent();
         } else {
+          this.agent?.setMessages([]); // server supports session management, no need to resend history
           this.status.set('Ready to chat');
         }
       }

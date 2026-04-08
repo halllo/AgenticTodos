@@ -23,8 +23,9 @@ namespace AgenticTodos.Cli.Verbs
         {
             var cancellationToken = CancellationToken.None;
             var serverUrl =
-                "http://localhost:5288/agents/static/amazonbedrock/agui"
-                // "http://localhost:5288/agents/static/openai/agui"
+                // "http://localhost:5288/agents/static/amazonbedrock/agui" // no session management
+                // "http://localhost:5288/agents/static/openai/agui" // no session management
+                "http://localhost:5288/agents/routed/amazonbedrock/agui"
                 ;
             logger.LogInformation("Connecting to AG-UI server at: {ServerUrl}", serverUrl);
 
@@ -186,7 +187,8 @@ namespace AgenticTodos.Cli.Verbs
 
                     // Remember messages for the next turn
                     var chatResponse = updates.ToChatResponse();
-                    messages.AddRange(chatResponse.Messages);
+                    //messages.AddRange(chatResponse.Messages);
+                    messages.Clear(); // server now supports session management
                 }
             }
             catch (OperationCanceledException)

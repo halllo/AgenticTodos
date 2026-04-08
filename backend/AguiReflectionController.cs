@@ -19,6 +19,7 @@ public class AgentProvider(IServiceProvider services) : IAgentProvider
     public AIAgent? Get(string alias) => services.GetRequiredKeyedService<AIAgent>(alias);
 }
 
+[Obsolete("This variant does not have session management and is only meant for testing and reference. Use HttpContextRoutingAgent instead.")]
 [ApiController]
 [Route("agents/reflection")]
 public class AguiReflectionController(IAgentProvider agents) : ControllerBase

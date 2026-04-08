@@ -2,6 +2,7 @@ using AgenticTodos.Backend;
 using Amazon.BedrockRuntime;
 using Microsoft.Agents.AI;
 using Microsoft.Agents.AI.DevUI;
+using Microsoft.Agents.AI.Hosting;
 using Microsoft.Agents.AI.Hosting.AGUI.AspNetCore;
 using Microsoft.Extensions.AI;
 using OpenAI;
@@ -35,14 +36,18 @@ builder.Services.AddKeyedSingleton("agentAliases", builder.Services
 builder.Services.AddScoped<IAgentProvider, AgentProvider>();
 
 builder.Services.AddSingleton<HttpContextRoutingAgent>();
+builder.Services.AddSingleton<AgentSessionStore, FileSystemSessionStore>();
 builder.Services.AddHttpContextAccessor();
-builder.Services.AddSingleton<Func<HttpContext, ValueTask<AIAgent>>>(async httpContext =>
+builder.Services.AddSingleton<Func<HttpContext, ValueTask<AIHostAgent>>>(async httpContext =>
 {
-    await Task.Yield();//simulating loading
     var alias = httpContext.Request.RouteValues["alias"]?.ToString() ?? string.Empty;
     var agents = httpContext.RequestServices.GetRequiredService<IAgentProvider>();
+    var sessionStore = httpContext.RequestServices.GetRequiredService<AgentSessionStore>();
+
+    await Task.Yield();//simulating loading
     var agent = agents.Get(alias);
-    return agent!;
+    var hostedAgent = new AIHostAgent(agent!, sessionStore);
+    return hostedAgent;
 });
 
 
@@ -59,11 +64,23 @@ app.MapGet("/agents", (IAgentProvider agents) => agents.GetAliases());
 app.MapAGUI("/agents/static/openai/agui", CreateAgent(
     chatClient: OpenAI(builder.Configuration, builder.Environment.ApplicationName),
     tools: tools,
-    services: app.Services));
+    services: app.Services))
+    .AddOpenApiOperationTransformer((operation, context, ct) =>
+    {
+        operation.Deprecated = true; // no session management
+        return Task.CompletedTask;
+    })
+    ;
 app.MapAGUI("/agents/static/amazonbedrock/agui", CreateAgent(
     chatClient: AmazonBedrock(builder.Configuration, app.Services),
     tools: tools,
-    services: app.Services));
+    services: app.Services))
+    .AddOpenApiOperationTransformer((operation, context, ct) =>
+    {
+        operation.Deprecated = true; // no session management
+        return Task.CompletedTask;
+    })
+    ;
 
 // Routing agent (suggested workaround)
 app.MapAGUI("/agents/routed/{alias}/agui", app.Services.GetRequiredService<HttpContextRoutingAgent>());
@@ -125,8 +142,16 @@ static AIAgent CreateAgent(IChatClient chatClient, AIFunction[] tools, IServiceP
     var applicationName = services.GetRequiredService<IHostEnvironment>().ApplicationName;
     return chatClient
         .AsAIAgent(
-            name: "AGUIAssistant",
-            tools: tools,
+            options: new ChatClientAgentOptions
+            {
+                Name = "AGUIAssistant",
+                ChatOptions = new ChatOptions()
+                {
+                    Tools = tools,
+                },
+                ChatHistoryProvider = new FileSystemChatHistoryProvider(), // DevUI uses InMemoryResponsesService, which stores/loads directly with IConversationStorage.
+                AIContextProviders = [],
+            },
             services: services)
         .AsBuilder()
         .UseOpenTelemetry(sourceName: applicationName, configure: c => c.EnableSensitiveData = true)

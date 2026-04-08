@@ -6,7 +6,8 @@
       "Bash(dotnet run:*)",
       "Bash(dotnet test:*)",
       "Bash(lsof:*)",
-      "Bash(curl:*)"
+      "Bash(curl:*)",
+      "Bash(find:*)"
     ]
   }
 }
