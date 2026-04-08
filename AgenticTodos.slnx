@@ -1,6 +1,7 @@
 <Solution>
   <Project Path="apphost/AppHost.csproj" />
   <Project Path="backend/AgenticTodos.Backend.csproj" />
+  <Project Path="mcpserver/AgenticTodos.McpServer.csproj" />
   <Project Path="cli/AgenticTodos.Cli.csproj" />
   <Project Path="tests/AgenticTodos.Tests.csproj" />
 </Solution>

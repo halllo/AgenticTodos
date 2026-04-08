@@ -5,6 +5,7 @@ using Microsoft.Agents.AI.DevUI;
 using Microsoft.Agents.AI.Hosting;
 using Microsoft.Agents.AI.Hosting.AGUI.AspNetCore;
 using Microsoft.Extensions.AI;
+using ModelContextProtocol.Client;
 using OpenAI;
 using Scalar.AspNetCore;
 
@@ -16,7 +17,7 @@ builder.Services.AddDevUI();
 builder.Services.AddAGUI();
 builder.Services.AddControllers();
 
-var tools = GetTools();
+var tools = await GetTools(builder.Configuration);
 builder.Services.AddKeyedSingleton("openai", (sp, key) => CreateAgent(
     chatClient: OpenAI(builder.Configuration, builder.Environment.ApplicationName),
     tools: tools,
@@ -160,14 +161,25 @@ static AIAgent CreateAgent(IChatClient chatClient, AIFunction[] tools, IServiceP
         .Build(services);
 }
 
-static AIFunction[] GetTools()
+static async Task<AIFunction[]> GetTools(IConfiguration configuration)
 {
+    var mcpClient = await McpClient.CreateAsync(new HttpClientTransport(new()
+    {
+        Endpoint = new Uri($"{configuration["services:AgenticTodos-McpServer:https:0"]}/mcp"),
+        TransportMode = HttpTransportMode.StreamableHttp,
+    }));
+    var mcpTools = await mcpClient.ListToolsAsync();
+
     return [
+        .. mcpTools,
+
         AIFunctionFactory.Create(
+            name: "increment_counter",
+            description: "Increment the counter.",
             method: (IServiceProvider services) =>
             {
                 var loggerFactory = services.GetRequiredService<ILoggerFactory>();
-                var logger = loggerFactory.CreateLogger("GetCurrentTimeFunction");
+                var logger = loggerFactory.CreateLogger("IncrementCounterFunction");
 
                 var state = AIAgent.CurrentRunContext?.RunOptions?.AdditionalProperties?["my_state"] as StateSnapshotMiddleware.ConversationState;
                 if (state != null)
@@ -175,12 +187,10 @@ static AIFunction[] GetTools()
                     state.Counter++;
                 }
 
-                logger.LogInformation("GetCurrentTimeFunction called. Counter: {Counter}", state?.Counter);
+                logger.LogInformation("IncrementCounterFunction called. Counter: {Counter}", state?.Counter);
 
-                return DateTimeOffset.UtcNow;
-            },
-            name: "get_current_time",
-            description: "Get the current UTC time."
+                return state?.Counter;
+            }
         )
     ];
 }

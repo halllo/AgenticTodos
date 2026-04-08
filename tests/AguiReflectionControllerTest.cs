@@ -12,6 +12,7 @@ namespace AgenticTodos.Tests;
 /// <summary>
 /// In this test I try to get the same behavior as https://github.com/microsoft/agent-framework/blob/main/dotnet/src/Microsoft.Agents.AI.Hosting.AGUI.AspNetCore/AGUIEndpointRouteBuilderExtensions.csTests so that I can us it more flexibly.
 /// </summary>
+[Obsolete("The reflection-based approach tested here is fragile and not recommended for production use.")]
 public class AguiReflectionControllerTest
 {
     [Fact]

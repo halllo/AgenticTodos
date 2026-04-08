@@ -1,6 +1,9 @@
 var builder = DistributedApplication.CreateBuilder(args);
 
-var backend = builder.AddProject<Projects.AgenticTodos_Backend>("AgenticTodos-Backend");
+var mcpserver = builder.AddProject<Projects.AgenticTodos_McpServer>("AgenticTodos-McpServer");
+
+var backend = builder.AddProject<Projects.AgenticTodos_Backend>("AgenticTodos-Backend")
+    .WithReference(mcpserver);
 
 var element = builder.AddViteApp("AgenticTodos-Frontend", "../frontend")
     .WithEndpoint("http", (endpointAnnotation) =>
