@@ -49,6 +49,12 @@ app.MapDevUI();
 app.MapGet("/", () => "Hello Agents!");
 app.MapGet("/agents", (IAgentProvider agents) => agents.GetAliases());
 
+// Inject unsupported AGUI events for endpoints ending with "/agui"
+app.UseWhen(
+    ctx => ctx.Request.Path.Value?.EndsWith("/agui", StringComparison.OrdinalIgnoreCase) == true,
+    branch => branch.UseMiddleware<SseEventInjectionMiddleware>()
+);
+
 // Singleton agents with official AGUI endpoints
 app.MapAGUI("/agents/static/openai/agui", CreateAgent(
     chatClient: OpenAI(builder.Configuration, builder.Environment.ApplicationName),
