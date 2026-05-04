@@ -1,4 +1,4 @@
-<Project Sdk="Aspire.AppHost.Sdk/13.2.1">
+<Project Sdk="Aspire.AppHost.Sdk/13.2.4">
 
   <PropertyGroup>
     <OutputType>Exe</OutputType>
@@ -8,7 +8,7 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Aspire.Hosting.JavaScript" Version="13.2.1" />
+    <PackageReference Include="Aspire.Hosting.JavaScript" Version="13.2.4" />
   </ItemGroup>
 
   <ItemGroup>

@@ -35,21 +35,9 @@ builder.Services.AddKeyedSingleton("agentAliases", builder.Services
     .OrderBy(key => key)
     .ToList());
 builder.Services.AddScoped<IAgentProvider, AgentProvider>();
-
-builder.Services.AddSingleton<HttpContextRoutingAgent>();
 builder.Services.AddSingleton<AgentSessionStore, FileSystemSessionStore>();
+builder.Services.AddAGUISessionStore();
 builder.Services.AddHttpContextAccessor();
-builder.Services.AddSingleton<Func<HttpContext, ValueTask<AIHostAgent>>>(async httpContext =>
-{
-    var alias = httpContext.Request.RouteValues["alias"]?.ToString() ?? string.Empty;
-    var agents = httpContext.RequestServices.GetRequiredService<IAgentProvider>();
-    var sessionStore = httpContext.RequestServices.GetRequiredService<AgentSessionStore>();
-
-    await Task.Yield();//simulating loading
-    var agent = agents.Get(alias);
-    var hostedAgent = new AIHostAgent(agent!, sessionStore);
-    return hostedAgent;
-});
 
 
 
@@ -84,7 +72,7 @@ app.MapAGUI("/agents/static/amazonbedrock/agui", CreateAgent(
     ;
 
 // Routing agent (suggested workaround)
-app.MapAGUI("/agents/routed/{alias}/agui", app.Services.GetRequiredService<HttpContextRoutingAgent>());
+app.MapAGUIViaHttpRoutingAgent();
 
 // Reflection agents (self-made)
 app.MapControllers();

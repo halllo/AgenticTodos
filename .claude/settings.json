@@ -7,7 +7,10 @@
       "Bash(dotnet test:*)",
       "Bash(lsof:*)",
       "Bash(curl:*)",
-      "Bash(find:*)"
+      "Bash(find:*)",
+      "Bash(npm view *)",
+      "Bash(npm install *)",
+      "Bash(npm audit *)"
     ]
   }
 }
