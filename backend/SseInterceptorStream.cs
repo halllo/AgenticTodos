@@ -4,18 +4,24 @@ using System.Text;
 namespace AgenticTodos.Backend;
 
 /// <summary>
-/// Write-only stream that intercepts an SSE response body, forwards each complete event
-/// to the underlying stream, and calls an injector that can emit additional events after each one.
+/// Write-only stream that intercepts an SSE response body and calls an injector for every
+/// complete <c>data:</c> event. The injector controls what reaches the underlying stream:
+/// <list type="bullet">
+///   <item><c>null</c> — suppress the original event (write nothing).</item>
+///   <item>empty sequence — forward the original event unchanged.</item>
+///   <item>non-empty sequence — suppress the original event and emit these events instead.</item>
+/// </list>
+/// Non-<c>data:</c> SSE lines (comments, keep-alives) are always forwarded unchanged.
 /// </summary>
 [SuppressMessage("Reliability", "CA2213:Disposable fields should be disposed",
     Justification = "_inner is the original response body stream — we do not own it")]
 internal sealed class SseInterceptorStream : Stream
 {
     private readonly Stream _inner;
-    private readonly Func<string, IEnumerable<string>> _injector;
+    private readonly Func<string, IEnumerable<string>?> _injector;
     private readonly MemoryStream _buffer = new();
 
-    public SseInterceptorStream(Stream inner, Func<string, IEnumerable<string>> injector)
+    public SseInterceptorStream(Stream inner, Func<string, IEnumerable<string>?> injector)
     {
         _inner = inner;
         _injector = injector;
@@ -57,6 +63,21 @@ internal sealed class SseInterceptorStream : Stream
     public override Task FlushAsync(CancellationToken cancellationToken) =>
         _inner.FlushAsync(cancellationToken);
 
+    /// <summary>
+    /// Writes any bytes still in the buffer to the inner stream without attempting to parse them
+    /// as SSE events. Call this after the downstream handler has finished so that non-SSE error
+    /// responses (which may contain no <c>\n\n</c> boundary) are forwarded to the client rather
+    /// than silently dropped.
+    /// </summary>
+    public async Task FlushRemainingAsync(CancellationToken cancellationToken = default)
+    {
+        if (_buffer.Length > 0)
+        {
+            await _inner.WriteAsync(_buffer.ToArray(), cancellationToken).ConfigureAwait(false);
+            _buffer.SetLength(0);
+        }
+    }
+
     protected override void Dispose(bool disposing)
     {
         if (disposing) _buffer.Dispose();
@@ -87,17 +108,41 @@ internal sealed class SseInterceptorStream : Stream
 
         foreach (string evt in complete.Split("\n\n", StringSplitOptions.RemoveEmptyEntries))
         {
-            await _inner.WriteAsync(Encoding.UTF8.GetBytes(evt + "\n\n"), cancellationToken)
-                .ConfigureAwait(false);
-
-            if (!evt.StartsWith("data: ", StringComparison.Ordinal)) continue;
+            if (!evt.StartsWith("data: ", StringComparison.Ordinal))
+            {
+                // Non-data SSE lines are always forwarded unchanged.
+                await _inner.WriteAsync(Encoding.UTF8.GetBytes(evt + "\n\n"), cancellationToken)
+                    .ConfigureAwait(false);
+                continue;
+            }
 
             string json = evt["data: ".Length..];
-            foreach (string injected in _injector(json))
+            IEnumerable<string>? result = _injector(json);
+
+            if (result is null)
             {
-                await _inner.WriteAsync(
-                    Encoding.UTF8.GetBytes($"data: {injected}\n\n"),
-                    cancellationToken).ConfigureAwait(false);
+                // Null → suppress completely.
+                continue;
+            }
+
+            // Materialise once to check whether the sequence is empty.
+            IReadOnlyList<string> replacements = result as IReadOnlyList<string> ?? result.ToList();
+
+            if (replacements.Count == 0)
+            {
+                // Empty → forward original unchanged.
+                await _inner.WriteAsync(Encoding.UTF8.GetBytes(evt + "\n\n"), cancellationToken)
+                    .ConfigureAwait(false);
+            }
+            else
+            {
+                // Non-empty → suppress original, emit replacements.
+                foreach (string replacement in replacements)
+                {
+                    await _inner.WriteAsync(
+                        Encoding.UTF8.GetBytes($"data: {replacement}\n\n"),
+                        cancellationToken).ConfigureAwait(false);
+                }
             }
         }
     }
