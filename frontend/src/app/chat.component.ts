@@ -10,12 +10,15 @@ interface NewMessageViewModel {
 }
 
 interface MessageViewModel {
-  role: 'user' | 'assistant' | 'tool';
+  role: 'user' | 'assistant' | 'tool' | 'activity';
   content: string;
   toolName?: string;
   toolCallId?: string;
   isGenerating?: boolean;
   error?: boolean;
+  activityType?: string;
+  resourceUri?: string;
+  messageId?: string;
 }
 
 @Component({
@@ -56,6 +59,7 @@ interface MessageViewModel {
             [class.chat__message--user]="message.role === 'user'"
             [class.chat__message--assistant]="message.role === 'assistant'"
             [class.chat__message--tool]="message.role === 'tool'"
+            [class.chat__message--activity]="message.role === 'activity'"
             [class.chat__message--error]="message.error"
           >
             <div class="chat__avatar">
@@ -65,6 +69,8 @@ interface MessageViewModel {
                 🤖
               } @else if (message.role === 'tool') {
                 🛠️
+              } @else if (message.role === 'activity') {
+                🔌
               }
             </div>
             <div class="chat__content" [class.chat__content--generating]="message.isGenerating">
@@ -72,7 +78,12 @@ interface MessageViewModel {
                 <span class="chat__toolIndicator">{{ message.toolName }}</span>
                 <br>
               }
-              {{ message.content }}
+              @if (message.role === 'activity') {
+                <span class="chat__toolIndicator">MCP App · {{ message.resourceUri }}</span>
+                <pre class="chat__activityContent">{{ message.content }}</pre>
+              } @else {
+                {{ message.content }}
+              }
             </div>
           </div>
         }
@@ -394,6 +405,26 @@ interface MessageViewModel {
       }
     }
 
+    .chat__message.chat__message--activity {
+      .chat__content {
+        background: #f3e5f5;
+        color: #6a1b9a;
+        border-radius: 4px 8px 18px 18px;
+        font-size: 0.875rem;
+      }
+      .chat__avatar {
+        background: #f3e5f5;
+        color: #6a1b9a;
+      }
+    }
+
+    .chat__activityContent {
+      font-size: 0.7rem;
+      margin: 0.25rem 0 0;
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+
     .chat__message.chat__message--tool {
       .chat__content {
         background: #e0f7fa;
@@ -540,6 +571,23 @@ export class ChatComponent {
               ? [...msgs.slice(0, -1), { ...last, content: event.message, isGenerating: false, error: true }]
               : [...msgs, { role: 'assistant', content: event.message, isGenerating: false, error: true }];
           });
+        }
+      },
+      onActivitySnapshotEvent: ({ event }) => {
+        const content = event.content as Record<string, unknown>;
+        const resourceUri = typeof content?.['resourceUri'] === 'string' ? content['resourceUri'] : undefined;
+        const existing = this.messages().findIndex(m => m.role === 'activity' && m.messageId === event.messageId);
+        const vm: MessageViewModel = {
+          role: 'activity',
+          content: JSON.stringify(content, null, 2),
+          activityType: event.activityType,
+          resourceUri,
+          messageId: event.messageId,
+        };
+        if (existing >= 0) {
+          this.messages.update(msgs => msgs.map((m, i) => i === existing ? vm : m));
+        } else {
+          this.messages.update(msgs => [...msgs, vm]);
         }
       },
       onStateSnapshotEvent: ({ event }) => {

@@ -18,7 +18,6 @@ builder.Services.AddAGUI();
 builder.Services.AddControllers();
 
 var tools = await GetTools(builder.Configuration);
-builder.Services.AddSingleton(new McpToolRegistry(tools));
 builder.Services.AddKeyedSingleton("openai", (sp, key) => CreateAgent(
     chatClient: OpenAI(builder.Configuration, builder.Environment.ApplicationName),
     tools: tools,
@@ -53,7 +52,7 @@ app.MapGet("/agents", (IAgentProvider agents) => agents.GetAliases());
 // Inject unsupported AGUI events for endpoints ending with "/agui"
 app.UseWhen(
     ctx => ctx.Request.Path.Value?.EndsWith("/agui", StringComparison.OrdinalIgnoreCase) == true,
-    branch => branch.UseMiddleware<SseEventInjectionMiddleware>()
+    branch => branch.UseMiddleware<SseEventInjectionMiddleware>(McpAppsActivityInjector.TryInjectActivitySnapshot)
 );
 
 // Singleton agents with official AGUI endpoints
@@ -136,7 +135,6 @@ static IChatClient AmazonBedrock(IConfiguration configuration, IServiceProvider 
 static AIAgent CreateAgent(IChatClient chatClient, AIFunction[] tools, IServiceProvider services)
 {
     var applicationName = services.GetRequiredService<IHostEnvironment>().ApplicationName;
-    var registry = services.GetRequiredService<McpToolRegistry>();
     return chatClient
         .AsAIAgent(
             options: new ChatClientAgentOptions
@@ -154,11 +152,7 @@ static AIAgent CreateAgent(IChatClient chatClient, AIFunction[] tools, IServiceP
         .UseOpenTelemetry(sourceName: applicationName, configure: c => c.EnableSensitiveData = true)
         .Use(sharedFunc: OmitEmptySystemMessagesMiddleware.Invoke)
         .Use(runFunc: StateSnapshotMiddleware.RunAsync, runStreamingFunc: StateSnapshotMiddleware.RunStreamingAsync)
-        .Use(
-            runFunc: (msgs, sess, opts, inner, ct) =>
-                McpAppsActivityMiddleware.RunAsync(msgs, sess, opts, inner, registry, ct),
-            runStreamingFunc: (msgs, sess, opts, inner, ct) =>
-                McpAppsActivityMiddleware.RunStreamingAsync(msgs, sess, opts, inner, registry, ct))
+        .UseDetectMcpAppsActivity()
         .Build(services);
 }
 

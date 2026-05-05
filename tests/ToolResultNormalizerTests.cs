@@ -3,7 +3,7 @@ using AgenticTodos.Backend;
 
 namespace AgenticTodos.Tests;
 
-public class ToolResultNormalizerTests
+public class DetectMcpAppsActivityMiddlewareTests
 {
     // ---------------------------------------------------------------------------
     // Already-normalized inputs — returned unchanged
@@ -13,21 +13,21 @@ public class ToolResultNormalizerTests
     public void AlreadyNormalized_SingleTextItem_ReturnedUnchanged()
     {
         const string input = """{"content":[{"type":"text","text":"hello"}]}""";
-        Assert.Equal(input, ToolResultNormalizer.Normalize(input));
+        Assert.Equal(input, DetectMcpAppsActivityMiddleware.NormalizeToolResult(input));
     }
 
     [Fact]
     public void AlreadyNormalized_MultipleTypedItems_ReturnedUnchanged()
     {
         const string input = """{"content":[{"type":"text","text":"a"},{"type":"text","text":"b"}]}""";
-        Assert.Equal(input, ToolResultNormalizer.Normalize(input));
+        Assert.Equal(input, DetectMcpAppsActivityMiddleware.NormalizeToolResult(input));
     }
 
     [Fact]
     public void AlreadyNormalized_EmptyContentArray_ReturnedUnchanged()
     {
         const string input = """{"content":[]}""";
-        Assert.Equal(input, ToolResultNormalizer.Normalize(input));
+        Assert.Equal(input, DetectMcpAppsActivityMiddleware.NormalizeToolResult(input));
     }
 
     // ---------------------------------------------------------------------------
@@ -38,7 +38,7 @@ public class ToolResultNormalizerTests
     public void MissingTypeDiscriminator_InjectsTextType()
     {
         const string input = """{"content":[{"text":"05.05.2026 10:17:16"}]}""";
-        var result = ToolResultNormalizer.Normalize(input);
+        var result = DetectMcpAppsActivityMiddleware.NormalizeToolResult(input);
         AssertSingleTextItem(result, "05.05.2026 10:17:16");
     }
 
@@ -46,7 +46,7 @@ public class ToolResultNormalizerTests
     public void MixedTypedAndUntyped_OnlyUntypedItemsGetType()
     {
         const string input = """{"content":[{"type":"text","text":"typed"},{"text":"untyped"}]}""";
-        var result = ToolResultNormalizer.Normalize(input);
+        var result = DetectMcpAppsActivityMiddleware.NormalizeToolResult(input);
         using var doc = JsonDocument.Parse(result);
         var items = doc.RootElement.GetProperty("content").EnumerateArray().ToList();
         Assert.Equal(2, items.Count);
@@ -63,14 +63,14 @@ public class ToolResultNormalizerTests
     public void TextContentObject_ExtractsTextProperty()
     {
         const string input = """{"text":"The current time is 10:17","annotations":null,"additionalProperties":null}""";
-        AssertSingleTextItem(ToolResultNormalizer.Normalize(input), "The current time is 10:17");
+        AssertSingleTextItem(DetectMcpAppsActivityMiddleware.NormalizeToolResult(input), "The current time is 10:17");
     }
 
     [Fact]
     public void TextContentObject_EmptyText_ProducesEmptyTextItem()
     {
         const string input = """{"text":"","annotations":null}""";
-        AssertSingleTextItem(ToolResultNormalizer.Normalize(input), "");
+        AssertSingleTextItem(DetectMcpAppsActivityMiddleware.NormalizeToolResult(input), "");
     }
 
     // ---------------------------------------------------------------------------
@@ -82,7 +82,7 @@ public class ToolResultNormalizerTests
     {
         // JsonSerializer.Serialize("hello") → "\"hello\""
         const string input = "\"hello world\"";
-        AssertSingleTextItem(ToolResultNormalizer.Normalize(input), "hello world");
+        AssertSingleTextItem(DetectMcpAppsActivityMiddleware.NormalizeToolResult(input), "hello world");
     }
 
     [Fact]
@@ -90,7 +90,7 @@ public class ToolResultNormalizerTests
     {
         var text = "line1\nline2\ttab\"quote";
         var jsonString = JsonSerializer.Serialize(text); // "\"line1\\nline2\\ttab\\\"quote\""
-        var result = ToolResultNormalizer.Normalize(jsonString);
+        var result = DetectMcpAppsActivityMiddleware.NormalizeToolResult(jsonString);
         using var doc = JsonDocument.Parse(result);
         var extracted = doc.RootElement.GetProperty("content")[0].GetProperty("text").GetString();
         Assert.Equal(text, extracted);
@@ -104,14 +104,14 @@ public class ToolResultNormalizerTests
     public void PlainString_NotJson_WrappedAsText()
     {
         const string input = "this is plain text";
-        AssertSingleTextItem(ToolResultNormalizer.Normalize(input), "this is plain text");
+        AssertSingleTextItem(DetectMcpAppsActivityMiddleware.NormalizeToolResult(input), "this is plain text");
     }
 
     [Fact]
     public void NullOrEmpty_ReturnsEmptyContentArray()
     {
-        Assert.Equal("""{"content":[]}""", ToolResultNormalizer.Normalize(""));
-        Assert.Equal("""{"content":[]}""", ToolResultNormalizer.Normalize(null!));
+        Assert.Equal("""{"content":[]}""", DetectMcpAppsActivityMiddleware.NormalizeToolResult(""));
+        Assert.Equal("""{"content":[]}""", DetectMcpAppsActivityMiddleware.NormalizeToolResult(null!));
     }
 
     // ---------------------------------------------------------------------------
@@ -121,14 +121,14 @@ public class ToolResultNormalizerTests
     [Fact]
     public void JsonNumber_WrappedAsText()
     {
-        var result = ToolResultNormalizer.Normalize("42");
+        var result = DetectMcpAppsActivityMiddleware.NormalizeToolResult("42");
         AssertSingleTextItem(result, "42");
     }
 
     [Fact]
     public void JsonBool_WrappedAsText()
     {
-        var result = ToolResultNormalizer.Normalize("true");
+        var result = DetectMcpAppsActivityMiddleware.NormalizeToolResult("true");
         AssertSingleTextItem(result, "true");
     }
 

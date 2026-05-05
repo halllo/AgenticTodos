@@ -1,27 +1,25 @@
 using System.Diagnostics.CodeAnalysis;
-using System.Text.Json;
+using System.Text;
 
 namespace AgenticTodos.Backend;
 
 /// <summary>
-/// ASP.NET Core middleware that uses <see cref="SseInterceptorStream"/> to replace
-/// <c>TEXT_MESSAGE_CONTENT</c> events whose <c>delta</c> carries an <c>mcp-activity</c> marker
-/// with proper <c>ACTIVITY_SNAPSHOT</c> events, as required by the AG-UI MCP Apps protocol.
+/// ASP.NET Core middleware that uses <see cref="SseInterceptorStream"/> to intercept SSE
+/// responses and apply a caller-supplied injector to each <c>data:</c> event. The injector
+/// can suppress, forward, or replace events.
 /// <para>
-/// The marker is emitted by <see cref="McpAppsActivityMiddleware"/> as a
-/// <c>DataContent("application/x-mcp-activity")</c>, which the AGUI framework converts to a
-/// <c>TEXT_MESSAGE_CONTENT</c> SSE event (keeping it out of the state-snapshot pathway).
+/// Register via <c>UseWhen</c> and pass the injector as an extra constructor argument:
+/// <code>branch.UseMiddleware&lt;SseEventInjectionMiddleware&gt;(MyInjector.Transform)</code>
 /// </para>
-/// Register via UseWhen so it only runs for /agents/* requests.
 /// </summary>
 [SuppressMessage("Performance", "CA1812:Avoid uninstantiated internal classes",
     Justification = "Instantiated by ASP.NET Core via UseMiddleware<T>")]
-internal sealed class SseEventInjectionMiddleware(RequestDelegate next)
+internal sealed class SseEventInjectionMiddleware(RequestDelegate next, Func<string, IEnumerable<string>?> injector)
 {
     public async Task InvokeAsync(HttpContext context)
     {
         Stream originalBody = context.Response.Body;
-        using var interceptor = new SseInterceptorStream(originalBody, InjectAfter);
+        using var interceptor = new SseInterceptorStream(originalBody, injector);
         context.Response.Body = interceptor;
         try
         {
@@ -35,61 +33,147 @@ internal sealed class SseEventInjectionMiddleware(RequestDelegate next)
     }
 
     /// <summary>
-    /// Intercepts every SSE <c>data:</c> event.
+    /// Write-only stream that intercepts an SSE response body and calls an injector for every
+    /// complete <c>data:</c> event. The injector controls what reaches the underlying stream:
     /// <list type="bullet">
-    ///   <item>
-    ///     <c>TEXT_MESSAGE_CONTENT</c> whose <c>delta</c> parses as JSON with <c>type == "mcp-activity"</c>:
-    ///     suppress the event and emit an <c>ACTIVITY_SNAPSHOT</c> instead.
-    ///   </item>
-    ///   <item>Everything else: forward unchanged (return empty sequence).</item>
+    ///   <item><c>null</c> — suppress the original event (write nothing).</item>
+    ///   <item>empty sequence — forward the original event unchanged.</item>
+    ///   <item>non-empty sequence — suppress the original event and emit these events instead.</item>
     /// </list>
+    /// Non-<c>data:</c> SSE lines (comments, keep-alives) are always forwarded unchanged.
     /// </summary>
-    private static IEnumerable<string>? InjectAfter(string eventJson)
+    [SuppressMessage("Reliability", "CA2213:Disposable fields should be disposed",
+        Justification = "_inner is the original response body stream — we do not own it")]
+    private class SseInterceptorStream : Stream
     {
-        using JsonDocument doc = JsonDocument.Parse(eventJson);
-        JsonElement root = doc.RootElement;
+        private readonly Stream _inner;
+        private readonly Func<string, IEnumerable<string>?> _injector;
+        private readonly MemoryStream _buffer = new();
 
-        if (!root.TryGetProperty("type", out var typeProp) ||
-            typeProp.GetString() != "TEXT_MESSAGE_CONTENT")
-            return [];
-
-        if (!root.TryGetProperty("delta", out var deltaProp))
-            return [];
-
-        string? deltaText = deltaProp.GetString();
-        if (deltaText is null) return [];
-
-        JsonElement activity;
-        try
+        public SseInterceptorStream(Stream inner, Func<string, IEnumerable<string>?> injector)
         {
-            using var activityDoc = JsonDocument.Parse(deltaText);
-            activity = activityDoc.RootElement.Clone();
-        }
-        catch (JsonException)
-        {
-            return [];
+            _inner = inner;
+            _injector = injector;
         }
 
-        if (!activity.TryGetProperty("type", out var actTypeProp) ||
-            actTypeProp.GetString() != "mcp-activity")
-            return [];
+        public override bool CanRead => false;
+        public override bool CanSeek => false;
+        public override bool CanWrite => true;
+        public override long Length => throw new NotSupportedException();
+        public override long Position
+        {
+            get => throw new NotSupportedException();
+            set => throw new NotSupportedException();
+        }
 
-        string? messageId = activity.TryGetProperty("messageId", out var mid) ? mid.GetString() : null;
-        string? resourceUri = activity.TryGetProperty("resourceUri", out var ru) ? ru.GetString() : null;
-        if (resourceUri is null) return [];
+        public override int Read(byte[] buffer, int offset, int count) =>
+            throw new NotSupportedException();
 
-        string resultJson = activity.TryGetProperty("result", out var result)
-            ? result.GetRawText()
-            : """{"content":[]}""";
-        string toolInputJson = activity.TryGetProperty("toolInput", out var toolInput)
-            ? toolInput.GetRawText()
-            : "{}";
+        public override long Seek(long offset, SeekOrigin origin) =>
+            throw new NotSupportedException();
 
-        string encodedMsgId = messageId is null ? "null" : JsonSerializer.Serialize(messageId);
-        string encodedUri = JsonSerializer.Serialize(resourceUri);
-        string contentJson = $$"""{"resourceUri":{{encodedUri}},"result":{{resultJson}},"toolInput":{{toolInputJson}}}""";
-        string activitySnapshot = $$"""{"type":"ACTIVITY_SNAPSHOT","messageId":{{encodedMsgId}},"activityType":"mcp-apps","replace":true,"content":{{contentJson}}}""";
+        public override void SetLength(long value) =>
+            throw new NotSupportedException();
 
-        return [activitySnapshot];
+        // SseFormatter only uses the async overload; synchronous Write is not expected.
+        public override void Write(byte[] buffer, int offset, int count) =>
+            throw new NotSupportedException("Use WriteAsync instead.");
+
+        public override Task WriteAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken) =>
+            WriteAsync(buffer.AsMemory(offset, count), cancellationToken).AsTask();
+
+        public override async ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken = default)
+        {
+            _buffer.Write(buffer.Span);
+            await ForwardCompleteEventsAsync(cancellationToken).ConfigureAwait(false);
+        }
+
+        public override void Flush() => _inner.Flush();
+        public override Task FlushAsync(CancellationToken cancellationToken) =>
+            _inner.FlushAsync(cancellationToken);
+
+        /// <summary>
+        /// Writes any bytes still in the buffer to the inner stream without attempting to parse them
+        /// as SSE events. Call this after the downstream handler has finished so that non-SSE error
+        /// responses (which may contain no <c>\n\n</c> boundary) are forwarded to the client rather
+        /// than silently dropped.
+        /// </summary>
+        public async Task FlushRemainingAsync(CancellationToken cancellationToken = default)
+        {
+            if (_buffer.Length > 0)
+            {
+                await _inner.WriteAsync(_buffer.GetBuffer().AsMemory(0, (int)_buffer.Length), cancellationToken).ConfigureAwait(false);
+                _buffer.SetLength(0);
+            }
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing) _buffer.Dispose();
+            base.Dispose(disposing);
+        }
+
+        private async Task ForwardCompleteEventsAsync(CancellationToken cancellationToken)
+        {
+            // SSE events are delimited by \n\n. Buffer until at least one complete event is available.
+            string text = Encoding.UTF8.GetString(_buffer.GetBuffer(), 0, (int)_buffer.Length);
+
+            int lastBoundary = -1;
+            int pos = 0;
+            while ((pos = text.IndexOf("\n\n", pos, StringComparison.Ordinal)) >= 0)
+            {
+                lastBoundary = pos + 2;
+                pos += 2;
+            }
+
+            if (lastBoundary < 0) return;
+
+            string complete = text[..lastBoundary];
+            string remaining = text[lastBoundary..];
+
+            _buffer.SetLength(0);
+            if (remaining.Length > 0)
+                _buffer.Write(Encoding.UTF8.GetBytes(remaining));
+
+            foreach (string evt in complete.Split("\n\n", StringSplitOptions.RemoveEmptyEntries))
+            {
+                if (!evt.StartsWith("data: ", StringComparison.Ordinal))
+                {
+                    // Non-data SSE lines are always forwarded unchanged.
+                    await _inner.WriteAsync(Encoding.UTF8.GetBytes(evt + "\n\n"), cancellationToken)
+                        .ConfigureAwait(false);
+                    continue;
+                }
+
+                string json = evt["data: ".Length..];
+                IEnumerable<string>? result = _injector(json);
+
+                if (result is null)
+                {
+                    // Null → suppress completely.
+                    continue;
+                }
+
+                // Materialise once to check whether the sequence is empty.
+                IReadOnlyList<string> replacements = result as IReadOnlyList<string> ?? result.ToList();
+
+                if (replacements.Count == 0)
+                {
+                    // Empty → forward original unchanged.
+                    await _inner.WriteAsync(Encoding.UTF8.GetBytes(evt + "\n\n"), cancellationToken)
+                        .ConfigureAwait(false);
+                }
+                else
+                {
+                    // Non-empty → suppress original, emit replacements.
+                    foreach (string replacement in replacements)
+                    {
+                        await _inner.WriteAsync(
+                            Encoding.UTF8.GetBytes($"data: {replacement}\n\n"),
+                            cancellationToken).ConfigureAwait(false);
+                    }
+                }
+            }
+        }
     }
 }
