@@ -149,6 +149,8 @@ The frontend's [`McpClientService`](frontend/src/app/mcp-client.service.ts) crea
 | [`frontend/src/sandbox.ts`](frontend/src/sandbox.ts) | Outer iframe relay script (compiled to `backend/wwwroot/sandbox.js`) |
 | [`backend/McpAppsActivityInjector.cs`](backend/McpAppsActivityInjector.cs) | Translates internal `mcp-activity` SSE markers to `ACTIVITY_SNAPSHOT` events |
 
+![get-time MCP App](mcp-app-get-time.png)
+
 ### ✅ AGUI routing agent intercepts `/agents/mcp-relay`
 
 `app.MapAGUIViaHttpRoutingAgent()` registers middleware that handles all `/agents/*` paths. If the MCP relay (`app.Map("/agents/mcp-relay", ...)`) is placed after it, the routing agent intercepts requests first and returns 405 for HTTP methods it doesn't support (GET, which the MCP Streamable HTTP transport uses for SSE).
