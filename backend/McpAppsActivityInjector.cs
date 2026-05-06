@@ -28,54 +28,65 @@ internal static class McpAppsActivityInjector
     /// </summary>
     internal static IEnumerable<string>? TryInjectActivitySnapshot(string eventJson)
     {
-        using JsonDocument doc = JsonDocument.Parse(eventJson);
-        JsonElement root = doc.RootElement;
-
-        if (!root.TryGetProperty("type", out var typeProp) ||
-            typeProp.GetString() != "TEXT_MESSAGE_CONTENT")
-            return [];
-
-        if (!root.TryGetProperty("delta", out var deltaProp))
-            return [];
-
-        string? deltaText = deltaProp.GetString();
-        if (deltaText is null) return [];
-
-        string? messageId, resourceUri, resultJson, toolInputJson;
-        try
+        JsonDocument doc;
+        try { doc = JsonDocument.Parse(eventJson); }
+        catch (JsonException) { return []; }
+        using (doc)
         {
-            using var activityDoc = JsonDocument.Parse(deltaText);
-            JsonElement activity = activityDoc.RootElement;
+            JsonElement root = doc.RootElement;
 
-            if (activity.ValueKind != JsonValueKind.Object)
+            if (!root.TryGetProperty("type", out var typeProp) ||
+                typeProp.GetString() != "TEXT_MESSAGE_CONTENT")
                 return [];
 
-            if (!activity.TryGetProperty("type", out var actTypeProp) ||
-                actTypeProp.GetString() != "mcp-activity")
+            // The outer TEXT_MESSAGE_CONTENT always carries a valid messageId — use it as fallback.
+            string? outerMessageId = root.TryGetProperty("messageId", out var outerMid) ? outerMid.GetString() : null;
+
+            if (!root.TryGetProperty("delta", out var deltaProp))
                 return [];
 
-            messageId = activity.TryGetProperty("messageId", out var mid) ? mid.GetString() : null;
-            resourceUri = activity.TryGetProperty("resourceUri", out var ru) ? ru.GetString() : null;
-            if (resourceUri is null) return [];
+            string? deltaText = deltaProp.GetString();
+            if (deltaText is null) return [];
 
-            // GetRawText() copies the JSON fragment to a string before the document is disposed.
-            resultJson = activity.TryGetProperty("result", out var result)
-                ? result.GetRawText()
-                : """{"content":[]}""";
-            toolInputJson = activity.TryGetProperty("toolInput", out var toolInput)
-                ? toolInput.GetRawText()
-                : "{}";
-        }
-        catch (JsonException)
-        {
-            return [];
-        }
+            string? messageId, resourceUri, resultJson, toolInputJson;
+            try
+            {
+                using var activityDoc = JsonDocument.Parse(deltaText);
+                JsonElement activity = activityDoc.RootElement;
 
-        string encodedMsgId = messageId is null ? "null" : JsonSerializer.Serialize(messageId);
-        string encodedUri = JsonSerializer.Serialize(resourceUri);
-        string contentJson = $$"""{"resourceUri":{{encodedUri}},"result":{{resultJson}},"toolInput":{{toolInputJson}}}""";
-        string activitySnapshot = $$"""{"type":"ACTIVITY_SNAPSHOT","messageId":{{encodedMsgId}},"activityType":"mcp-apps","replace":true,"content":{{contentJson}}}""";
+                if (activity.ValueKind != JsonValueKind.Object)
+                    return [];
 
-        return [activitySnapshot];
+                if (!activity.TryGetProperty("type", out var actTypeProp) ||
+                    actTypeProp.GetString() != "mcp-activity")
+                    return [];
+
+                // Prefer inner messageId, fall back to outer. Both null means we cannot emit a valid event.
+                messageId = activity.TryGetProperty("messageId", out var mid) ? mid.GetString() : outerMessageId;
+                if (messageId is null) return null; // suppress; cannot produce a valid ACTIVITY_SNAPSHOT without a messageId
+
+                resourceUri = activity.TryGetProperty("resourceUri", out var ru) ? ru.GetString() : null;
+                if (resourceUri is null) return [];
+
+                // GetRawText() copies the JSON fragment to a string before the document is disposed.
+                resultJson = activity.TryGetProperty("result", out var result)
+                    ? result.GetRawText()
+                    : """{"content":[]}""";
+                toolInputJson = activity.TryGetProperty("toolInput", out var toolInput)
+                    ? toolInput.GetRawText()
+                    : "{}";
+            }
+            catch (JsonException)
+            {
+                return [];
+            }
+
+            string encodedMsgId = JsonSerializer.Serialize(messageId);
+            string encodedUri = JsonSerializer.Serialize(resourceUri);
+            string contentJson = $$"""{"resourceUri":{{encodedUri}},"result":{{resultJson}},"toolInput":{{toolInputJson}}}""";
+            string activitySnapshot = $$"""{"type":"ACTIVITY_SNAPSHOT","messageId":{{encodedMsgId}},"activityType":"mcp-apps","replace":true,"content":{{contentJson}}}""";
+
+            return [activitySnapshot];
+        } // end using (doc)
     }
 }

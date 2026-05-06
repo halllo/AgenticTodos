@@ -10,7 +10,18 @@
       "Bash(find:*)",
       "Bash(npm view *)",
       "Bash(npm install *)",
-      "Bash(npm audit *)"
+      "Bash(npm audit *)",
+      "Bash(npm run *)",
+      "Bash(npx tsc *)",
+      "Bash(xargs cat)",
+      "Bash(grep -v \"^$\")",
+      "Bash(python3 -c *)",
+      "Bash(pkill -f \"AgenticTodos\")",
+      "Bash(netstat -tlnp)",
+      "Bash(dotnet run --project apphost/ > /tmp/aspire.log 2>&1 & *)"
+    ],
+    "additionalDirectories": [
+      "/tmp"
     ]
   }
 }

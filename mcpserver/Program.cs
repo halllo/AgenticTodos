@@ -5,10 +5,7 @@ using ModelContextProtocol.Server;
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddMcpServer()
-    .WithHttpTransport(o =>
-    {
-        o.Stateless = true;
-    })
+    .WithHttpTransport(o => o.Stateless = true)
     .WithTools<GetTimeApp>()
     .WithResources<GetTimeApp>()
     ;
@@ -34,5 +31,6 @@ public class GetTimeApp()
     ];
     
     [McpServerResource(UriTemplate = URI, MimeType = "text/html;profile=mcp-app")]
-    public async Task<string> GetTimeUIResource() => await File.ReadAllTextAsync("/Users/Manuel.Naujoks/Projects/AgenticTodos/mcpserver/get-time-app/dist/get-time.html");
+    public async Task<string> GetTimeUIResource() =>
+        await File.ReadAllTextAsync(Path.Combine(Directory.GetCurrentDirectory(), "get-time-app", "dist", "get-time.html"));
 }

@@ -5,6 +5,7 @@ This experimental application aims to explore the following technologies:
 - Microsoft Agent Framework
 - AG-UI
 - WebMCP
+- MCP Apps (`@modelcontextprotocol/ext-apps`)
 
 ## Development
 
@@ -22,6 +23,21 @@ These secrets are managed by dotnet:
 cd backend
 dotnet user-secrets set AWSBedrockAccessKeyId ...
 dotnet user-secrets set AWSBedrockSecretAccessKey ...
+```
+
+The `get-time-app` MCP app must be built before the first run (produces `dist/get-time.html` which the MCP server reads at runtime):
+
+```bash
+cd mcpserver/get-time-app
+npm install
+npm run build
+```
+
+The Angular sandbox script must also be built once (produces `backend/wwwroot/sandbox.js` needed for the double-iframe MCP app renderer):
+
+```bash
+cd frontend
+npm run build:sandbox
 ```
 
 Then run the backend and frontend locally:
@@ -111,6 +127,33 @@ Possible workarounds are
 - use reflection to instantiate the AGUI types ([example](./backend/AguiReflectionController.cs))
 
 Neither are great solutions, but good enough.
+
+### ✅ Rendering MCP Apps in the frontend
+
+When the agent calls a tool that carries `ui.resourceUri` metadata in its MCP definition, the backend detects this via [`McpAppsActivityMiddleware`](backend/McpAppsActivityMiddleware.cs) and emits an `ACTIVITY_SNAPSHOT` AG-UI event carrying `resourceUri`, `toolInput`, and `toolResult`. The frontend renders the actual MCP app HTML inside a sandboxed double-iframe using the `@modelcontextprotocol/ext-apps` AppBridge protocol.
+
+**Security model — double-iframe with cross-origin sandbox:**
+
+- Host: `http://localhost:3000` (Angular/Vite dev server)
+- Outer sandbox iframe: `http://localhost:5288/sandbox.html` (ASP.NET backend — a different origin, giving cross-origin isolation)
+- Inner iframe: MCP app HTML injected via the AppBridge `sendSandboxResourceReady` message
+
+The frontend's [`McpClientService`](frontend/src/app/mcp-client.service.ts) creates its own MCP client that connects to the backend's transparent HTTP relay at `/agents/mcp-relay`. The relay forwards all MCP Streamable HTTP traffic to the real MCP server, allowing the AppBridge inside the iframe to call server tools directly.
+
+**Key files:**
+
+| File | Role |
+| --- | --- |
+| [`frontend/src/app/mcp-app.component.ts`](frontend/src/app/mcp-app.component.ts) | Standalone Angular component that mounts the double-iframe |
+| [`frontend/src/app/mcp-client.service.ts`](frontend/src/app/mcp-client.service.ts) | Singleton MCP client connected via the relay |
+| [`frontend/src/sandbox.ts`](frontend/src/sandbox.ts) | Outer iframe relay script (compiled to `backend/wwwroot/sandbox.js`) |
+| [`backend/McpAppsActivityInjector.cs`](backend/McpAppsActivityInjector.cs) | Translates internal `mcp-activity` SSE markers to `ACTIVITY_SNAPSHOT` events |
+
+### ✅ AGUI routing agent intercepts `/agents/mcp-relay`
+
+`app.MapAGUIViaHttpRoutingAgent()` registers middleware that handles all `/agents/*` paths. If the MCP relay (`app.Map("/agents/mcp-relay", ...)`) is placed after it, the routing agent intercepts requests first and returns 405 for HTTP methods it doesn't support (GET, which the MCP Streamable HTTP transport uses for SSE).
+
+Fixed by registering the relay as an `app.Use()` middleware branch placed **before** `app.MapAGUIViaHttpRoutingAgent()` in [`backend/Program.cs`](backend/Program.cs).
 
 ### ❌ AG-UI Client does not support Amazon Bedrock's parallel tool calls
 

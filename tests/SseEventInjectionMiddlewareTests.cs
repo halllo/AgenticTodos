@@ -121,12 +121,12 @@ public class SseEventInjectionMiddlewareTests
     }
 
     [Fact]
-    public void McpActivityMarker_NullMessageId_ProducesNullInSnapshot()
+    public void McpActivityMarker_InnerMissingMessageId_FallsBackToOuterMessageId()
     {
         var delta = JsonSerializer.Serialize(new
         {
             type = "mcp-activity",
-            // no messageId
+            // no inner messageId — should fall back to outer TEXT_MESSAGE_CONTENT messageId
             resourceUri = "ui://get-time.html",
             result = new { content = Array.Empty<object>() },
             toolInput = new { }
@@ -138,7 +138,7 @@ public class SseEventInjectionMiddlewareTests
         Assert.NotNull(result);
         Assert.Single(result!);
         using var doc = JsonDocument.Parse(result![0]);
-        Assert.Equal(JsonValueKind.Null, doc.RootElement.GetProperty("messageId").ValueKind);
+        Assert.Equal("m", doc.RootElement.GetProperty("messageId").GetString());
     }
 
     [Fact]

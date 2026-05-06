@@ -4,6 +4,7 @@ import { HttpAgent, Message, RunAgentParameters } from "@ag-ui/client"
 import { JsonPipe } from '@angular/common';
 import { form, FormField, required } from '@angular/forms/signals';
 import { WebmcpService } from './webmcp.service';
+import { McpAppComponent } from './mcp-app.component';
 
 interface NewMessageViewModel {
   content: string;
@@ -19,11 +20,13 @@ interface MessageViewModel {
   activityType?: string;
   resourceUri?: string;
   messageId?: string;
+  toolInput?: Record<string, unknown>;
+  toolResult?: unknown;
 }
 
 @Component({
   selector: 'app-chat',
-  imports: [FormField, JsonPipe],
+  imports: [FormField, JsonPipe, McpAppComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <div class="chat">
@@ -80,7 +83,11 @@ interface MessageViewModel {
               }
               @if (message.role === 'activity') {
                 <span class="chat__toolIndicator">MCP App · {{ message.resourceUri }}</span>
-                <pre class="chat__activityContent">{{ message.content }}</pre>
+                <app-mcp-app
+                  [resourceUri]="message.resourceUri!"
+                  [toolInput]="message.toolInput ?? {}"
+                  [toolResult]="message.toolResult"
+                />
               } @else {
                 {{ message.content }}
               }
@@ -576,6 +583,8 @@ export class ChatComponent {
       onActivitySnapshotEvent: ({ event }) => {
         const content = event.content as Record<string, unknown>;
         const resourceUri = typeof content?.['resourceUri'] === 'string' ? content['resourceUri'] : undefined;
+        const toolInput = content?.['toolInput'] as Record<string, unknown> | undefined;
+        const toolResult = content?.['result'];
         const existing = this.messages().findIndex(m => m.role === 'activity' && m.messageId === event.messageId);
         const vm: MessageViewModel = {
           role: 'activity',
@@ -583,6 +592,8 @@ export class ChatComponent {
           activityType: event.activityType,
           resourceUri,
           messageId: event.messageId,
+          toolInput,
+          toolResult,
         };
         if (existing >= 0) {
           this.messages.update(msgs => msgs.map((m, i) => i === existing ? vm : m));

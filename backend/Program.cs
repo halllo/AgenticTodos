@@ -38,6 +38,7 @@ builder.Services.AddScoped<IAgentProvider, AgentProvider>();
 builder.Services.AddSingleton<AgentSessionStore, FileSystemSessionStore>();
 builder.Services.AddAGUISessionStore();
 builder.Services.AddHttpContextAccessor();
+builder.Services.AddHttpClient();
 
 
 
@@ -49,11 +50,61 @@ app.MapDevUI();
 app.MapGet("/", () => "Hello Agents!");
 app.MapGet("/agents", (IAgentProvider agents) => agents.GetAliases());
 
+// CSP headers for the outer sandbox iframe
+app.Use(async (ctx, next) =>
+{
+    if (ctx.Request.Path.Equals("/sandbox.html", StringComparison.OrdinalIgnoreCase))
+    {
+        ctx.Response.Headers["Cache-Control"] = "no-cache, no-store, must-revalidate";
+        ctx.Response.Headers["Content-Security-Policy"] =
+            "default-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline' 'unsafe-eval' blob:; connect-src *;";
+    }
+    await next();
+});
+app.UseStaticFiles();
+
 // Inject unsupported AGUI events for endpoints ending with "/agui"
 app.UseWhen(
     ctx => ctx.Request.Path.Value?.EndsWith("/agui", StringComparison.OrdinalIgnoreCase) == true,
-    branch => branch.UseMiddleware<SseEventInjectionMiddleware>(McpAppsActivityInjector.TryInjectActivitySnapshot)
+    branch => branch.UseMiddleware<SseEventInjectionMiddleware>((Func<string, IEnumerable<string>?>)McpAppsActivityInjector.TryInjectActivitySnapshot)
 );
+
+// Transparent HTTP proxy that forwards MCP Streamable HTTP traffic to the MCP server.
+// Must be registered BEFORE MapAGUIViaHttpRoutingAgent, which intercepts all /agents/* paths.
+app.Use(async (HttpContext ctx, RequestDelegate next) =>
+{
+    if (!ctx.Request.Path.StartsWithSegments("/agents/mcp-relay"))
+    {
+        await next(ctx);
+        return;
+    }
+
+    var config = ctx.RequestServices.GetRequiredService<IConfiguration>();
+    var factory = ctx.RequestServices.GetRequiredService<IHttpClientFactory>();
+    var mcpEndpoint = $"{config["services:AgenticTodos-McpServer:https:0"]}/mcp";
+    using var httpClient = factory.CreateClient();
+
+    var forward = new HttpRequestMessage(new HttpMethod(ctx.Request.Method), mcpEndpoint);
+    if (ctx.Request.ContentLength > 0 || ctx.Request.Headers.TransferEncoding.Count > 0)
+        forward.Content = new StreamContent(ctx.Request.Body);
+    if (ctx.Request.ContentType is { } ct && forward.Content != null)
+        forward.Content.Headers.ContentType = System.Net.Http.Headers.MediaTypeHeaderValue.Parse(ct);
+    foreach (var (key, value) in ctx.Request.Headers)
+    {
+        if (!key.StartsWith("Host", StringComparison.OrdinalIgnoreCase) &&
+            !key.StartsWith("Transfer-Encoding", StringComparison.OrdinalIgnoreCase))
+            forward.Headers.TryAddWithoutValidation(key, [.. value]);
+    }
+
+    var response = await httpClient.SendAsync(forward, HttpCompletionOption.ResponseHeadersRead, ctx.RequestAborted);
+    ctx.Response.StatusCode = (int)response.StatusCode;
+    foreach (var (key, values) in response.Headers.Concat(response.Content.Headers))
+    {
+        if (!key.Equals("Transfer-Encoding", StringComparison.OrdinalIgnoreCase))
+            ctx.Response.Headers[key] = values.ToArray();
+    }
+    await response.Content.CopyToAsync(ctx.Response.Body, ctx.RequestAborted);
+});
 
 // Singleton agents with official AGUI endpoints
 app.MapAGUI("/agents/static/openai/agui", CreateAgent(
