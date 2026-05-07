@@ -1,5 +1,6 @@
 using System.Diagnostics.CodeAnalysis;
 using System.Text;
+using System.Text.Json;
 
 namespace AgenticTodos.Backend;
 
@@ -7,6 +8,12 @@ namespace AgenticTodos.Backend;
 /// ASP.NET Core middleware that uses <see cref="SseInterceptorStream"/> to intercept SSE
 /// responses and apply a caller-supplied injector to each <c>data:</c> event. The injector
 /// can suppress, forward, or replace events.
+/// <para>
+/// Exceptions thrown by downstream handlers before any SSE streaming begins (i.e. "eager"
+/// failures such as session-store errors) are caught here and emitted as a
+/// <c>RUN_STARTED</c> + <c>RUN_ERROR</c> SSE event pair so the client receives a structured
+/// AG-UI error instead of a bare 500.
+/// </para>
 /// <para>
 /// Register via <c>UseWhen</c> and pass the injector as an extra constructor argument:
 /// <code>branch.UseMiddleware&lt;SseEventInjectionMiddleware&gt;(MyInjector.Transform)</code>
@@ -21,15 +28,37 @@ internal sealed class SseEventInjectionMiddleware(RequestDelegate next, Func<str
         Stream originalBody = context.Response.Body;
         using var interceptor = new SseInterceptorStream(originalBody, injector);
         context.Response.Body = interceptor;
+        bool earlyError = false;
         try
         {
             await next(context).ConfigureAwait(false);
         }
+        catch (Exception ex) when (ex is not OperationCanceledException && !context.Response.HasStarted)
+        {
+            // Downstream threw before any SSE data was written — convert to an AG-UI error stream.
+            earlyError = true;
+            context.Response.Body = originalBody;
+            await WriteAguiRunErrorAsync(context, "EagerError", ex.Message).ConfigureAwait(false);
+        }
         finally
         {
-            await interceptor.FlushRemainingAsync().ConfigureAwait(false);
+            if (!earlyError)
+                await interceptor.FlushRemainingAsync().ConfigureAwait(false);
             context.Response.Body = originalBody;
         }
+    }
+
+    private static async Task WriteAguiRunErrorAsync(HttpContext context, string code, string message)
+    {
+        context.Response.StatusCode = 200;
+        context.Response.ContentType = "text/event-stream";
+        context.Response.Headers.CacheControl = "no-cache";
+
+        var runStarted = JsonSerializer.Serialize(new { type = "RUN_STARTED", threadId = string.Empty, runId = string.Empty });
+        var runError = JsonSerializer.Serialize(new { type = "RUN_ERROR", message, code });
+
+        var payload = Encoding.UTF8.GetBytes($"data: {runStarted}\n\ndata: {runError}\n\n");
+        await context.Response.Body.WriteAsync(payload, context.RequestAborted).ConfigureAwait(false);
     }
 
     /// <summary>
