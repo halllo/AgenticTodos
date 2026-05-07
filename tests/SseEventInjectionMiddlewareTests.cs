@@ -1,5 +1,8 @@
+using System.Text;
 using System.Text.Json;
 using AgenticTodos.Backend;
+using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.Http.Features;
 
 namespace AgenticTodos.Tests;
 
@@ -191,4 +194,147 @@ public class SseEventInjectionMiddlewareTests
 
     private static IEnumerable<string>? Inject(string eventJson) =>
         McpAppsActivityInjector.TryInjectActivitySnapshot(eventJson);
+}
+
+public class SseEventInjectionMiddlewareInvokeTests
+{
+    // Injector that forwards every event unchanged (returns empty sequence).
+    private static readonly Func<string, IEnumerable<string>?> s_passThrough = _ => [];
+
+    // ---------------------------------------------------------------------------
+    // Eager exception handling
+    // ---------------------------------------------------------------------------
+
+    [Fact]
+    public async Task EagerException_EmitsRunStartedThenRunError()
+    {
+        var (middleware, context, responseBody) = Build(
+            next: _ => throw new InvalidOperationException("session store failed"));
+
+        await middleware.InvokeAsync(context);
+
+        var events = ParseSseEvents(responseBody);
+        Assert.Equal(2, events.Count);
+
+        Assert.Equal("RUN_STARTED", events[0].GetProperty("type").GetString());
+        Assert.Equal("", events[0].GetProperty("threadId").GetString());
+        Assert.Equal("", events[0].GetProperty("runId").GetString());
+
+        Assert.Equal("RUN_ERROR", events[1].GetProperty("type").GetString());
+        Assert.Equal("EagerError", events[1].GetProperty("code").GetString());
+        Assert.Equal("session store failed", events[1].GetProperty("message").GetString());
+    }
+
+    [Fact]
+    public async Task EagerException_ResponseIs200WithTextEventStream()
+    {
+        var (middleware, context, _) = Build(
+            next: _ => throw new InvalidOperationException("oops"));
+
+        await middleware.InvokeAsync(context);
+
+        Assert.Equal(200, context.Response.StatusCode);
+        Assert.Equal("text/event-stream", context.Response.ContentType);
+    }
+
+    [Fact]
+    public async Task EagerException_ResponseBodyRestoredAfterError()
+    {
+        var (middleware, context, _) = Build(
+            next: _ => throw new InvalidOperationException("oops"));
+        var originalBody = context.Response.Body;
+
+        await middleware.InvokeAsync(context);
+
+        Assert.Same(originalBody, context.Response.Body);
+    }
+
+    [Fact]
+    public async Task OperationCanceledException_Propagates()
+    {
+        var (middleware, context, _) = Build(
+            next: _ => throw new OperationCanceledException());
+
+        await Assert.ThrowsAsync<OperationCanceledException>(() => middleware.InvokeAsync(context));
+    }
+
+    [Fact]
+    public async Task ExceptionWhenResponseAlreadyStarted_Propagates()
+    {
+        var (middleware, context, _) = Build(
+            next: _ => throw new InvalidOperationException("too late"));
+
+        // Signal that the response has already started so the catch filter returns false.
+        context.Features.Set<IHttpResponseFeature>(new ResponseStartedFeature());
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => middleware.InvokeAsync(context));
+    }
+
+    // ---------------------------------------------------------------------------
+    // Normal path
+    // ---------------------------------------------------------------------------
+
+    [Fact]
+    public async Task NormalPath_EventsForwardedUnchanged()
+    {
+        var (middleware, context, responseBody) = Build(
+            next: async ctx =>
+            {
+                var bytes = Encoding.UTF8.GetBytes(
+                    "data: {\"type\":\"RUN_STARTED\"}\n\ndata: {\"type\":\"RUN_FINISHED\"}\n\n");
+                await ctx.Response.Body.WriteAsync(bytes);
+            });
+
+        await middleware.InvokeAsync(context);
+
+        var events = ParseSseEvents(responseBody);
+        Assert.Equal(2, events.Count);
+        Assert.Equal("RUN_STARTED", events[0].GetProperty("type").GetString());
+        Assert.Equal("RUN_FINISHED", events[1].GetProperty("type").GetString());
+    }
+
+    [Fact]
+    public async Task NormalPath_ResponseBodyRestoredAfterSuccess()
+    {
+        var (middleware, context, _) = Build(next: _ => Task.CompletedTask);
+        var originalBody = context.Response.Body;
+
+        await middleware.InvokeAsync(context);
+
+        Assert.Same(originalBody, context.Response.Body);
+    }
+
+    // ---------------------------------------------------------------------------
+    // Helpers
+    // ---------------------------------------------------------------------------
+
+    private static (SseEventInjectionMiddleware middleware, DefaultHttpContext context, MemoryStream responseBody)
+        Build(RequestDelegate next, Func<string, IEnumerable<string>?>? injector = null)
+    {
+        var responseBody = new MemoryStream();
+        var context = new DefaultHttpContext();
+        context.Response.Body = responseBody;
+        var middleware = new SseEventInjectionMiddleware(next, injector ?? s_passThrough);
+        return (middleware, context, responseBody);
+    }
+
+    private static List<JsonElement> ParseSseEvents(MemoryStream stream)
+    {
+        var text = Encoding.UTF8.GetString(stream.GetBuffer(), 0, (int)stream.Length);
+        return text.Split("\n\n", StringSplitOptions.RemoveEmptyEntries)
+            .Where(e => e.StartsWith("data: ", StringComparison.Ordinal))
+            .Select(e => JsonDocument.Parse(e["data: ".Length..]).RootElement)
+            .ToList();
+    }
+
+    private sealed class ResponseStartedFeature : IHttpResponseFeature
+    {
+        public bool HasStarted => true;
+        public int StatusCode { get; set; } = 200;
+        public string? ReasonPhrase { get; set; }
+        public IHeaderDictionary Headers { get; set; } = new HeaderDictionary();
+        public Stream Body { get; set; } = Stream.Null;
+        public void OnStarting(Func<object, Task> callback, object state) { }
+        public void OnCompleted(Func<object, Task> callback, object state) { }
+    }
 }
