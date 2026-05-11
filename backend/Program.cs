@@ -56,8 +56,7 @@ app.Use(async (ctx, next) =>
     if (ctx.Request.Path.Equals("/sandbox.html", StringComparison.OrdinalIgnoreCase))
     {
         ctx.Response.Headers["Cache-Control"] = "no-cache, no-store, must-revalidate";
-        ctx.Response.Headers["Content-Security-Policy"] =
-            "default-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline' 'unsafe-eval' blob:; connect-src *;";
+        ctx.Response.Headers["Content-Security-Policy"] = "default-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline' 'unsafe-eval' blob:; connect-src *;";
     }
     await next();
 });
