@@ -40,10 +40,15 @@ public static class StateSnapshotMiddleware
         options?.AdditionalProperties?["my_state"] = state;
 
         // make state available to LLM
-        if (state != null)
+        // Only inject the state snapshot when the conversation doesn't end with a pending tool
+        // call/result pair. The OpenAI Chat Completions API requires that an assistant message
+        // with tool_calls is immediately followed by the corresponding tool messages — no other
+        // message type (including system) may appear between them. Skipping injection here
+        // ensures the state snapshot is never inserted into that gap.
+        if (state != null && !messages.Any(m => m.Role == ChatRole.Tool))
         {
             var stateMessage = new ChatMessage(ChatRole.System, $"Current conversation state (selected resources / metadata):\n```json\n{JsonSerializer.Serialize(state)}\n```");
-            messages = messages.Prepend(stateMessage).Where(m => m != null).Select(m => m!);
+            messages = messages.Prepend(stateMessage);
         }
 
         // invoke downstream processings
@@ -63,7 +68,7 @@ public static class StateSnapshotMiddleware
         }
     }
 
-    private static ConversationState? GetState(AgentRunOptions? options)
+        private static ConversationState? GetState(AgentRunOptions? options)
     {
         if (options is not ChatClientAgentRunOptions chatOpts) return null;
         if (chatOpts.ChatOptions?.AdditionalProperties?.TryGetValue("ag_ui_state", out var stateObj) != true) return null;

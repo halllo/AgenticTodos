@@ -6,7 +6,7 @@
   "author": "",
   "main": "get-time.js",
   "scripts": {
-    "build": "INPUT=get-time.html vite build"
+    "build": "vite build"
   },
   "dependencies": {
     "@modelcontextprotocol/ext-apps": "^1.5.0"
