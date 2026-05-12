@@ -17,7 +17,13 @@ var element = builder.AddViteApp("AgenticTodos-Frontend", "../frontend")
         endpointAnnotation.Port = 3000;
     })
     .WithReference(backend)
-    .WithExternalHttpEndpoints()
-    ;
+    .WithExternalHttpEndpoints();
+
+#pragma warning disable ASPIREJAVASCRIPT001 // Type is for evaluation purposes only and is subject to change or removal in future updates. Suppress this diagnostic to proceed.
+element.PublishAsStaticWebsite("/agents", backend, options =>
+    {
+        options.OutputPath = "dist/agentic-todos/browser";
+    });
+#pragma warning restore ASPIREJAVASCRIPT001 // Type is for evaluation purposes only and is subject to change or removal in future updates. Suppress this diagnostic to proceed.
 
 builder.Build().Run();

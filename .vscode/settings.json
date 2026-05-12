@@ -3,6 +3,7 @@
     "chat.tools.terminal.autoApprove": {
         "npm run build": true,
         "dotnet build": true,
-        "dotnet test": true
+        "dotnet test": true,
+        "ForEach-Object": true
     }
 }
