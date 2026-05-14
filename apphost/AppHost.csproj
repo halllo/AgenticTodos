@@ -8,7 +8,7 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Aspire.Hosting.AWS" Version="13.1.0" />
+    <ProjectReference Include="/Users/manuel.naujoks/Projects/aws-dotnet-aspire/src/Aspire.Hosting.AWS/Aspire.Hosting.AWS.csproj" IsAspireProjectResource="false" />
     <PackageReference Include="Aspire.Hosting.Azure.AppContainers" Version="13.3.2" />
     <PackageReference Include="Aspire.Hosting.JavaScript" Version="13.3.2" />
   </ItemGroup>
