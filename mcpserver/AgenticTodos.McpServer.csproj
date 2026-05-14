@@ -20,4 +20,20 @@
     <None Include="get-time-app\dist\**\*" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
+  <ItemGroup>
+    <Content Remove="threejs-app\**" />
+    <None Remove="threejs-app\**" />
+    <None Include="threejs-app\dist\**\*" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+
+  <Target Name="BuildMcpApps" BeforeTargets="Build">
+    <ItemGroup>
+      <McpApp Include="get-time-app;threejs-app" />
+    </ItemGroup>
+    <Exec Command="npm install" WorkingDirectory="$(MSBuildProjectDirectory)\%(McpApp.Identity)"
+          Condition="!Exists('$(MSBuildProjectDirectory)\%(McpApp.Identity)\node_modules')" />
+    <Exec Command="npm run build" WorkingDirectory="$(MSBuildProjectDirectory)\%(McpApp.Identity)" />
+  </Target>
+
 </Project>

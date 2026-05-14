@@ -19,7 +19,8 @@
       "Bash(pkill -f \"AgenticTodos\")",
       "Bash(netstat -tlnp)",
       "Bash(dotnet run *)",
-      "Bash(xargs ls -la)"
+      "Bash(xargs ls -la)",
+      "Bash(grep *)"
     ],
     "additionalDirectories": [
       "/Users/manuel.naujoks/Projects/aws-dotnet-aspire",
