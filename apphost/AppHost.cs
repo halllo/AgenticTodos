@@ -35,6 +35,12 @@ var element = builder.AddViteApp("AgenticTodos-Frontend", "../frontend")
     {
         options.OutputPath = "dist/agentic-todos/browser";
     })
+    .PublishAsS3StaticWebsite(config =>
+    {
+        config.WithCloudFront = true;
+        config.OutputPath = "dist/agentic-todos/browser";
+        config.AddBackendBehavior("/agents/*", backend);
+    })
     ;
 
 builder.Build().Run();

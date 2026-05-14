@@ -4,6 +4,7 @@ builder.Services.AddMcpServer()
     .WithHttpTransport(o => o.Stateless = true)
     .WithMcpApp<GetTimeApp>()
     .WithMcpApp<ThreejsApp>()
+    .WithMcpApp<PdfViewerApp>()
     ;
 
 var app = builder.Build();

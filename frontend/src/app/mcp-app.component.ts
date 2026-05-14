@@ -6,6 +6,7 @@ import {
   OnDestroy,
   ViewChild,
   inject,
+  signal,
 } from '@angular/core';
 import {
   AppBridge,
@@ -27,7 +28,29 @@ const SANDBOX_READY_TIMEOUT_MS = 10_000;
 @Component({
   selector: 'app-mcp-app',
   standalone: true,
-  template: `<iframe #iframeEl style="width:100%;border:none;display:block;"></iframe>`,
+  template: `
+    <div [class]="displayMode() === 'fullscreen' ? 'mcp-app fullscreen' : 'mcp-app'">
+      @if (displayMode() === 'fullscreen') {
+        <button class="mcp-app__exit" (click)="exitFullscreen()">✕</button>
+      }
+      <iframe #iframeEl style="width:100%;border:none;display:block;"></iframe>
+    </div>
+  `,
+  styles: [`
+    .mcp-app { display: contents; }
+    .mcp-app.fullscreen {
+      position: fixed; inset: 0; z-index: 1000;
+      display: flex; flex-direction: column;
+      background: var(--color-background, #fff);
+      padding: 0;
+    }
+    .mcp-app.fullscreen iframe { flex: 1; height: 100%; width: 100%; }
+    .mcp-app__exit {
+      position: absolute; top: 0.5rem; right: 0.75rem;
+      background: transparent; border: none; cursor: pointer;
+      font-size: 1.25rem; z-index: 1001;
+    }
+  `],
 })
 export class McpAppComponent implements AfterViewInit, OnDestroy {
   resourceUri = input.required<string>();
@@ -35,6 +58,8 @@ export class McpAppComponent implements AfterViewInit, OnDestroy {
   toolResult = input<unknown>(null);
 
   @ViewChild('iframeEl') iframeRef!: ElementRef<HTMLIFrameElement>;
+
+  displayMode = signal<'inline' | 'fullscreen'>('inline');
 
   private mcpClientService = inject(McpClientService);
   private appBridge: AppBridge | null = null;
@@ -90,11 +115,18 @@ export class McpAppComponent implements AfterViewInit, OnDestroy {
           styles: { variables: HOST_STYLE_VARIABLES },
           containerDimensions: { maxHeight: 6000 },
           displayMode: 'inline',
-          availableDisplayModes: ['inline'],
+          availableDisplayModes: ['inline', 'fullscreen'],
         },
       },
     );
     this.appBridge = appBridge;
+
+    appBridge.onrequestdisplaymode = async ({ mode }) => {
+      const newMode = mode === 'fullscreen' ? 'fullscreen' : 'inline';
+      this.displayMode.set(newMode);
+      appBridge.sendHostContextChange({ displayMode: newMode });
+      return { mode: newMode };
+    };
 
     appBridge.onsizechange = async ({ width, height }) => {
       if (height !== undefined) iframe.style.height = `${height}px`;
@@ -121,6 +153,11 @@ export class McpAppComponent implements AfterViewInit, OnDestroy {
     } else {
       appBridge.sendToolCancelled({ reason: 'No result available' });
     }
+  }
+
+  exitFullscreen(): void {
+    this.displayMode.set('inline');
+    this.appBridge?.sendHostContextChange({ displayMode: 'inline' });
   }
 
   ngOnDestroy(): void {

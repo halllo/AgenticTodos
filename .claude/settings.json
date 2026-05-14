@@ -20,7 +20,14 @@
       "Bash(netstat -tlnp)",
       "Bash(dotnet run *)",
       "Bash(xargs ls -la)",
-      "Bash(grep *)"
+      "Bash(grep *)",
+      "Bash(aws sts *)",
+      "Bash(aws s3 *)",
+      "Bash(aws cloudfront *)",
+      "Bash(aws s3api *)",
+      "Bash(cat)",
+      "Bash(dotnet script *)",
+      "Bash(dotnet-script check_attr.csx)"
     ],
     "additionalDirectories": [
       "/Users/manuel.naujoks/Projects/aws-dotnet-aspire",

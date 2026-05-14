@@ -26,10 +26,15 @@
     <None Include="threejs-app\dist\**\*" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
+  <ItemGroup>
+    <Content Remove="pdf-viewer-app\**" />
+    <None Remove="pdf-viewer-app\**" />
+    <None Include="pdf-viewer-app\dist\**\*" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
 
   <Target Name="BuildMcpApps" BeforeTargets="Build">
     <ItemGroup>
-      <McpApp Include="get-time-app;threejs-app" />
+      <McpApp Include="get-time-app;threejs-app;pdf-viewer-app" />
     </ItemGroup>
     <Exec Command="npm install" WorkingDirectory="$(MSBuildProjectDirectory)\%(McpApp.Identity)"
           Condition="!Exists('$(MSBuildProjectDirectory)\%(McpApp.Identity)\node_modules')" />
