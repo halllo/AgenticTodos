@@ -18,9 +18,11 @@
       "Bash(python3 -c *)",
       "Bash(pkill -f \"AgenticTodos\")",
       "Bash(netstat -tlnp)",
-      "Bash(dotnet run --project apphost/ > /tmp/aspire.log 2>&1 & *)"
+      "Bash(dotnet run *)",
+      "Bash(xargs ls -la)"
     ],
     "additionalDirectories": [
+      "/Users/manuel.naujoks/Projects/aws-dotnet-aspire",
       "/tmp"
     ]
   }

@@ -14,6 +14,7 @@ builder.Services.AddMcpServer()
 var app = builder.Build();
 
 app.MapGet("/", () => "Hello World!");
+app.MapGet("/ping", () => Results.Ok());
 app.MapMcp("/mcp");
 
 app.Run();

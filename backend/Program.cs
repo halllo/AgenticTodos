@@ -1,7 +1,6 @@
 using AgenticTodos.Backend;
 using Amazon.BedrockRuntime;
 using Microsoft.Agents.AI;
-using Microsoft.Agents.AI.DevUI;
 using Microsoft.Agents.AI.Hosting;
 using Microsoft.Agents.AI.Hosting.AGUI.AspNetCore;
 using Microsoft.Extensions.AI;
@@ -13,18 +12,18 @@ var builder = WebApplication.CreateBuilder(args);
 
 OpenTelemetryExtensions.ConfigureOpenTelemetry(builder);
 builder.Services.AddOpenApi();
-builder.Services.AddDevUI();
 builder.Services.AddAGUI();
 builder.Services.AddControllers();
 
-var tools = await GetTools(builder.Configuration);
+builder.Services.AddSingleton(_ =>
+    new Lazy<Task<AIFunction[]>>(() => GetTools(builder.Configuration)));
 builder.Services.AddKeyedSingleton("openai", (sp, key) => CreateAgent(
     chatClient: OpenAI(builder.Configuration, builder.Environment.ApplicationName),
-    tools: tools,
+    tools: sp.GetRequiredService<Lazy<Task<AIFunction[]>>>().Value.GetAwaiter().GetResult(),
     services: sp));
 builder.Services.AddKeyedSingleton("amazonbedrock", (sp, key) => CreateAgent(
     chatClient: AmazonBedrock(builder.Configuration, sp),
-    tools: tools,
+    tools: sp.GetRequiredService<Lazy<Task<AIFunction[]>>>().Value.GetAwaiter().GetResult(),
     services: sp));
 
 builder.Services.AddKeyedSingleton("agentAliases", builder.Services
@@ -46,8 +45,8 @@ var app = builder.Build();
 
 app.MapOpenApi();
 app.MapScalarApiReference();
-app.MapDevUI();
 app.MapGet("/", () => "Hello Agents!");
+app.MapGet("/ping", () => Results.Ok());
 app.MapGet("/agents", (IAgentProvider agents) => agents.GetAliases());
 
 // CSP headers for the outer sandbox iframe
@@ -80,7 +79,10 @@ app.Use(async (HttpContext ctx, RequestDelegate next) =>
 
     var config = ctx.RequestServices.GetRequiredService<IConfiguration>();
     var factory = ctx.RequestServices.GetRequiredService<IHttpClientFactory>();
-    var mcpEndpoint = $"{config["services:AgenticTodos-McpServer:https:0"]}/mcp";
+    var mcpBaseUrl = config["services:AgenticTodos-McpServer:https:0"]
+        ?? config["services:AgenticTodos-McpServer:http:0"]
+        ?? throw new InvalidOperationException("MCP server endpoint is not configured.");
+    var mcpEndpoint = $"{mcpBaseUrl.TrimEnd('/')}/mcp";
     using var httpClient = factory.CreateClient();
 
     var forward = new HttpRequestMessage(new HttpMethod(ctx.Request.Method), mcpEndpoint);
@@ -106,26 +108,26 @@ app.Use(async (HttpContext ctx, RequestDelegate next) =>
 });
 
 // Singleton agents with official AGUI endpoints
-app.MapAGUI("/agents/static/openai/agui", CreateAgent(
-    chatClient: OpenAI(builder.Configuration, builder.Environment.ApplicationName),
-    tools: tools,
-    services: app.Services))
-    .AddOpenApiOperationTransformer((operation, context, ct) =>
-    {
-        operation.Deprecated = true; // no session management
-        return Task.CompletedTask;
-    })
-    ;
-app.MapAGUI("/agents/static/amazonbedrock/agui", CreateAgent(
-    chatClient: AmazonBedrock(builder.Configuration, app.Services),
-    tools: tools,
-    services: app.Services))
-    .AddOpenApiOperationTransformer((operation, context, ct) =>
-    {
-        operation.Deprecated = true; // no session management
-        return Task.CompletedTask;
-    })
-    ;
+// app.MapAGUI("/agents/static/openai/agui", CreateAgent(
+//     chatClient: OpenAI(builder.Configuration, builder.Environment.ApplicationName),
+//     tools: tools,
+//     services: app.Services))
+//     .AddOpenApiOperationTransformer((operation, context, ct) =>
+//     {
+//         operation.Deprecated = true; // no session management
+//         return Task.CompletedTask;
+//     })
+//     ;
+// app.MapAGUI("/agents/static/amazonbedrock/agui", CreateAgent(
+//     chatClient: AmazonBedrock(builder.Configuration, app.Services),
+//     tools: tools,
+//     services: app.Services))
+//     .AddOpenApiOperationTransformer((operation, context, ct) =>
+//     {
+//         operation.Deprecated = true; // no session management
+//         return Task.CompletedTask;
+//     })
+//     ;
 
 // Routing agent (suggested workaround)
 app.MapAGUIViaHttpRoutingAgent();
@@ -208,9 +210,12 @@ static AIAgent CreateAgent(IChatClient chatClient, AIFunction[] tools, IServiceP
 
 static async Task<AIFunction[]> GetTools(IConfiguration configuration)
 {
+    var mcpBaseUrl = configuration["services:AgenticTodos-McpServer:https:0"]
+        ?? configuration["services:AgenticTodos-McpServer:http:0"]
+        ?? throw new InvalidOperationException("MCP server endpoint is not configured.");
     var mcpClient = await McpClient.CreateAsync(new HttpClientTransport(new()
     {
-        Endpoint = new Uri($"{configuration["services:AgenticTodos-McpServer:https:0"]}/mcp"),
+        Endpoint = new Uri($"{mcpBaseUrl.TrimEnd('/')}/mcp"),
         TransportMode = HttpTransportMode.StreamableHttp,
     }));
     var mcpTools = await mcpClient.ListToolsAsync();
