@@ -273,7 +273,7 @@ interface MessageViewModel {
       }
 
       .chat__content {
-        max-width: 70%;
+        max-width: 80%;
         padding: 0.875rem 1.125rem;
         line-height: 1.5;
         word-wrap: break-word;
@@ -414,6 +414,7 @@ interface MessageViewModel {
 
     .chat__message.chat__message--activity {
       .chat__content {
+        width: 100%; //give all mcp apps max width (apps cannot really control their width anymore)
         background: #f3e5f5;
         color: #6a1b9a;
         border-radius: 4px 8px 18px 18px;

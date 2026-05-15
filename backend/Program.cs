@@ -49,13 +49,14 @@ app.MapGet("/", () => "Hello Agents!");
 app.MapGet("/ping", () => Results.Ok());
 app.MapGet("/agents", (IAgentProvider agents) => agents.GetAliases());
 
-// CSP headers for the outer sandbox iframe
+// CSP headers for the outer sandbox iframe — built dynamically from the ?csp= query param
 app.Use(async (ctx, next) =>
 {
     if (ctx.Request.Path.Equals("/sandbox.html", StringComparison.OrdinalIgnoreCase))
     {
         ctx.Response.Headers["Cache-Control"] = "no-cache, no-store, must-revalidate";
-        ctx.Response.Headers["Content-Security-Policy"] = "default-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline' 'unsafe-eval' blob:; connect-src *;";
+        var csp = ctx.Request.Query["csp"].FirstOrDefault()?.ToMcpUiResourceCsp();
+        ctx.Response.Headers["Content-Security-Policy"] = csp.BuildHeader();
     }
     await next();
 });

@@ -30,13 +30,11 @@ const SANDBOX_READY_TIMEOUT_MS = 10_000;
   standalone: true,
   template: `
     <div [class]="displayMode() === 'fullscreen' ? 'mcp-app fullscreen' : 'mcp-app'">
-      @if (displayMode() === 'fullscreen') {
-        <button class="mcp-app__exit" (click)="exitFullscreen()">✕</button>
-      }
-      <iframe #iframeEl style="width:100%;border:none;display:block;"></iframe>
+      <iframe #iframeEl style="width:100%;max-width:100%;border:none;"></iframe>
     </div>
   `,
   styles: [`
+    :host { display: block; }
     .mcp-app { display: contents; }
     .mcp-app.fullscreen {
       position: fixed; inset: 0; z-index: 1000;
@@ -64,6 +62,7 @@ export class McpAppComponent implements AfterViewInit, OnDestroy {
   private mcpClientService = inject(McpClientService);
   private appBridge: AppBridge | null = null;
   private sandboxAbort = new AbortController();
+  private iframeResizeObserver: ResizeObserver | null = null;
 
   async ngAfterViewInit(): Promise<void> {
     try {
@@ -121,6 +120,15 @@ export class McpAppComponent implements AfterViewInit, OnDestroy {
     );
     this.appBridge = appBridge;
 
+    // Notify the app when the iframe container width changes (e.g. layout shifts, resize)
+    this.iframeResizeObserver = new ResizeObserver(([entry]) => {
+      const width = Math.round(entry.contentRect.width);
+      if (width > 0) {
+        appBridge.sendHostContextChange({ containerDimensions: { width, maxHeight: 6000 } });
+      }
+    });
+    this.iframeResizeObserver.observe(iframe);
+
     appBridge.onrequestdisplaymode = async ({ mode }) => {
       const newMode = mode === 'fullscreen' ? 'fullscreen' : 'inline';
       this.displayMode.set(newMode);
@@ -129,12 +137,30 @@ export class McpAppComponent implements AfterViewInit, OnDestroy {
     };
 
     appBridge.onsizechange = async ({ width, height }) => {
+      console.debug('[McpAppComponent] Size change requested by MCP App:', { width, height });
+      if (this.displayMode() === 'fullscreen') return;
       if (height !== undefined) iframe.style.height = `${height}px`;
-      if (width !== undefined) iframe.style.minWidth = `min(${width}px, 100%)`;
+      
+      //if (width !== undefined) iframe.style.width = `${width}px`; 
+      // since we give all apps width:100% (.chat__message.chat__message--activity > .chat__content), they cannot really control their width anymore (and shouldn't try to), so we ignore width change requests for now
     };
 
     appBridge.onopenlink = async ({ url }) => {
       window.open(url, '_blank', 'noopener,noreferrer');
+      return {};
+    };
+
+    appBridge.onmessage = async (params) => {
+      console.log('[McpAppComponent] Message from MCP App:', params);
+      return {};
+    };
+
+    appBridge.onloggingmessage = (params) => {
+      console.log('[McpAppComponent] Log from MCP App:', params);
+    };
+
+    appBridge.onupdatemodelcontext = async (params) => {
+      console.log('[McpAppComponent] Model context update from MCP App:', params);
       return {};
     };
 
@@ -162,6 +188,7 @@ export class McpAppComponent implements AfterViewInit, OnDestroy {
 
   ngOnDestroy(): void {
     this.sandboxAbort.abort();
+    this.iframeResizeObserver?.disconnect();
     this.appBridge?.teardownResource({}).catch(() => {});
   }
 }
