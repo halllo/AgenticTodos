@@ -40,6 +40,7 @@ var element = builder.AddViteApp("AgenticTodos-Frontend", "../frontend")
         config.WithCloudFront = true;
         config.OutputPath = "dist/agentic-todos/browser";
         config.AddBackendBehavior("/agents/*", backend);
+        config.AddBackendBehavior("/mcp/*", mcpserver);
     })
     ;
 
