@@ -25,9 +25,13 @@
       "Bash(aws s3 *)",
       "Bash(aws cloudfront *)",
       "Bash(aws s3api *)",
+      "Bash(aws ec2 *)",
       "Bash(cat)",
       "Bash(dotnet script *)",
-      "Bash(dotnet-script check_attr.csx)"
+      "Bash(dotnet-script check_attr.csx)",
+      "Bash(gh pr *)",
+      "Bash(gh api *)",
+      "Bash(xargs ls)"
     ],
     "additionalDirectories": [
       "/Users/manuel.naujoks/Projects/aws-dotnet-aspire",

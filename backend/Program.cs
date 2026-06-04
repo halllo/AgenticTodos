@@ -35,6 +35,7 @@ builder.Services.AddKeyedSingleton("agentAliases", builder.Services
     .ToList());
 builder.Services.AddScoped<IAgentProvider, AgentProvider>();
 builder.Services.AddSingleton<AgentSessionStore, FileSystemSessionStore>();
+builder.Services.AddSingleton<IUploadedFileStore, UploadedFileStore>();
 builder.Services.AddAGUISessionStore();
 builder.Services.AddHttpContextAccessor();
 builder.Services.AddHttpClient();
@@ -48,6 +49,7 @@ app.MapScalarApiReference();
 app.MapGet("/", () => "Hello Agents!");
 app.MapGet("/ping", () => Results.Ok());
 app.MapGet("/agents", (IAgentProvider agents) => agents.GetAliases());
+app.MapFileEndpoints();
 
 // CSP headers for the outer sandbox iframe — built dynamically from the ?csp= query param
 app.Use(async (ctx, next) =>
@@ -188,6 +190,7 @@ static IChatClient AmazonBedrock(IConfiguration configuration, IServiceProvider 
 static AIAgent CreateAgent(IChatClient chatClient, AIFunction[] tools, IServiceProvider services)
 {
     var applicationName = services.GetRequiredService<IHostEnvironment>().ApplicationName;
+    var fileStore = services.GetRequiredService<IUploadedFileStore>();
     return chatClient
         .AsAIAgent(
             options: new ChatClientAgentOptions
@@ -203,6 +206,8 @@ static AIAgent CreateAgent(IChatClient chatClient, AIFunction[] tools, IServiceP
             services: services)
         .AsBuilder()
         .UseOpenTelemetry(sourceName: applicationName, configure: c => c.EnableSensitiveData = true)
+        .Use(sharedFunc: (messages, session, options, next, ct) =>
+            AttachmentResolutionMiddleware.Invoke(messages, session, options, next, ct, fileStore))
         .Use(sharedFunc: OmitEmptySystemMessagesMiddleware.Invoke)
         .Use(runFunc: StateSnapshotMiddleware.RunAsync, runStreamingFunc: StateSnapshotMiddleware.RunStreamingAsync)
         .UseDetectMcpAppsActivity()

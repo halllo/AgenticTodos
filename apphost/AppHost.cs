@@ -16,6 +16,10 @@ builder.AddAWSCDKEnvironment(
 var mcpserver = builder.AddProject<Projects.AgenticTodos_McpServer>("AgenticTodos-McpServer")
     .WithExternalHttpEndpoints()
     .PublishAsECSFargateServiceWithALB() //until https://github.com/aws/integrations-on-dotnet-aspire-for-aws/pull/200
+    // .PublishAsECSFargateExpressService(new Aspire.Hosting.AWS.Deployment.PublishECSFargateExpressServiceConfig
+    // {
+    //     EnableVpcEndpoints = true
+    // })
     ;
 
 var backend = builder.AddProject<Projects.AgenticTodos_Backend>("AgenticTodos-Backend")
@@ -35,12 +39,12 @@ var element = builder.AddViteApp("AgenticTodos-Frontend", "../frontend")
     {
         options.OutputPath = "dist/agentic-todos/browser";
     })
-    .WithCloudFrontBackendBehavior("/agents/*", backend)
-    .WithCloudFrontBackendBehavior("/mcp/*", mcpserver)
-    .PublishAsS3WithCloudFront(config =>
-    {
-        config.OutputPath = "dist/agentic-todos/browser";
-    })
+    // .WithCloudFrontBackendBehavior("/agents/*", backend)
+    // .WithCloudFrontBackendBehavior("/mcp/*", mcpserver)
+    // .PublishAsS3WithCloudFront(config =>
+    // {
+    //     config.OutputPath = "dist/agentic-todos/browser";
+    // })
     ;
 
 builder.Build().Run();

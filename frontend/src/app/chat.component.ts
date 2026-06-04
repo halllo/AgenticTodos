@@ -10,6 +10,11 @@ interface NewMessageViewModel {
   content: string;
 }
 
+interface Attachment {
+  fileId: string;
+  fileName: string;
+}
+
 interface MessageViewModel {
   role: 'user' | 'assistant' | 'tool' | 'activity';
   content: string;
@@ -22,6 +27,7 @@ interface MessageViewModel {
   messageId?: string;
   toolInput?: Record<string, unknown>;
   toolResult?: unknown;
+  attachments?: Attachment[];
 }
 
 @Component({
@@ -90,6 +96,15 @@ interface MessageViewModel {
                 />
               } @else {
                 {{ message.content }}
+                @if (message.attachments?.length) {
+                  <div class="chat__attachments">
+                    @for (att of message.attachments; track att.fileId) {
+                      <a class="chat__attachmentChip" [href]="'/agents/files/' + att.fileId" target="_blank" rel="noopener" download>
+                        📄 {{ att.fileName }}
+                      </a>
+                    }
+                  </div>
+                }
               }
             </div>
           </div>
@@ -113,12 +128,24 @@ interface MessageViewModel {
         <div class="chat__stateRow">
           <pre class="chat__state">{{ conversationState() | json }}</pre>
           <div class="chat__stateAdd">
-            <input #resourceInput type="text" class="chat__stateInput" placeholder="Add resource…" />
-            <button type="button" class="chat__stateBtn" (click)="addResource(resourceInput.value); resourceInput.value = ''">+</button>
+            <input #selectedResourceInput type="text" class="chat__stateInput" placeholder="Add selected resource…" />
+            <button type="button" class="chat__stateBtn" (click)="addSelectedResource(selectedResourceInput.value); selectedResourceInput.value = ''">+</button>
           </div>
         </div>
       }
+      @if (pendingAttachments().length) {
+        <div class="chat__pending">
+          @for (att of pendingAttachments(); track att.fileId) {
+            <span class="chat__pendingChip">
+              📄 {{ att.fileName }}
+              <button type="button" class="chat__pendingRemove" (click)="removePending(att.fileId)" aria-label="Remove attachment">×</button>
+            </span>
+          }
+        </div>
+      }
       <form class="chat__inputRow" (submit)="onSubmit($event)">
+        <input #fileInput type="file" multiple hidden (change)="onFilesSelected($event)"/>
+        <button type="button" class="chat__attach" [disabled]="isUploading()" (click)="fileInput.click()" aria-label="Attach files" title="Attach files">📎</button>
         <input type="text" [formField]="newMessageForm.content" placeholder="Type your message..." class="chat__input"/>
         @if (isLoading()) {
           <button type="button" class="chat__send" (click)="cancelRun()">✋ Stop</button>
@@ -412,6 +439,83 @@ interface MessageViewModel {
       }
     }
 
+    .chat__attach {
+      flex-shrink: 0;
+      width: 44px;
+      border: 2px solid var(--border);
+      border-radius: var(--radius-lg);
+      background: var(--surface);
+      font-size: 1.25rem;
+      cursor: pointer;
+      transition: border-color 0.2s, opacity 0.2s;
+
+      &:hover:not(:disabled) {
+        border-color: var(--brand-primary);
+      }
+
+      &:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+      }
+    }
+
+    .chat__pending {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+      padding: 0.5rem 1.5rem 0;
+      background: var(--surface);
+    }
+
+    .chat__pendingChip {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+      padding: 0.25rem 0.5rem 0.25rem 0.625rem;
+      background: var(--surface-muted);
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      font-size: 0.8rem;
+      color: var(--text);
+    }
+
+    .chat__pendingRemove {
+      border: none;
+      background: transparent;
+      cursor: pointer;
+      font-size: 1rem;
+      line-height: 1;
+      color: var(--text-muted);
+      padding: 0;
+
+      &:hover {
+        color: var(--text);
+      }
+    }
+
+    .chat__attachments {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+      margin-top: 0.5rem;
+    }
+
+    .chat__attachmentChip {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+      padding: 0.25rem 0.625rem;
+      background: rgba(255, 255, 255, 0.2);
+      border-radius: 14px;
+      font-size: 0.8rem;
+      color: inherit;
+      text-decoration: none;
+
+      &:hover {
+        text-decoration: underline;
+      }
+    }
+
     .chat__message.chat__message--activity {
       .chat__content {
         width: 100%; //give all mcp apps max width (apps cannot really control their width anymore)
@@ -464,6 +568,8 @@ export class ChatComponent {
   protected readonly messages = signal<MessageViewModel[]>([]);
   protected readonly status = signal('Ready to chat');
   protected readonly isLoading = signal(false);
+  protected readonly pendingAttachments = signal<Attachment[]>([]);
+  protected readonly isUploading = signal(false);
   protected readonly conversationState = signal<unknown>({ conversation: { selectedResources: [], counter: 0 } });
 
   protected readonly agents = httpResource<string[]>(() => '/agents');
@@ -667,16 +773,61 @@ export class ChatComponent {
     event.preventDefault();
 
     const newMessage = this.newMessageViewModel().content.trim();
-    if (!newMessage || this.isLoading()) {
+    const attachments = this.pendingAttachments();
+    if ((!newMessage && attachments.length === 0) || this.isLoading()) {
       return;
     }
 
+    // The local view model keeps clean text + structured attachments (no marker).
+    // Only the wire payload carries the hidden marker that the backend middleware resolves:
+    // it strips the marker, appends a model-visible "[Attached files: ...]" line, and stores
+    // the file paths in history (out of the model's view).
+    const marker = attachments.length
+      ? `\n[[agui-attachments:${attachments.map(a => a.fileId).join(',')}]]`
+      : '';
+
     this.newMessageViewModel.update(vm => ({ ...vm, content: '' }));
-    this.messages.update(msgs => [...msgs, { role: 'user', content: newMessage }]);
-    this.agent?.addMessages([{ id: "", role: 'user', content: newMessage }]);
+    this.pendingAttachments.set([]);
+    this.messages.update(msgs => [...msgs, { role: 'user', content: newMessage, attachments }]);
+    this.agent?.addMessages([{ id: "", role: 'user', content: newMessage + marker }]);
     this.scrollToBottom();
 
     await this.runAgent();
+  }
+
+  protected async onFilesSelected(event: Event): Promise<void> {
+    const input = event.target as HTMLInputElement;
+    const files = input.files;
+    if (!files?.length) {
+      return;
+    }
+
+    this.isUploading.set(true);
+    this.status.set('Uploading files...');
+    try {
+      const formData = new FormData();
+      for (const file of Array.from(files)) {
+        formData.append('files', file, file.name);
+      }
+      // Do not set Content-Type manually — the browser sets the multipart boundary.
+      const response = await fetch('/agents/files', { method: 'POST', body: formData });
+      if (!response.ok) {
+        throw new Error(`Upload failed: ${response.status}`);
+      }
+      const uploaded = await response.json() as Attachment[];
+      this.pendingAttachments.update(a => [...a, ...uploaded]);
+      this.status.set('Ready to chat');
+    } catch (error) {
+      console.error('Error uploading files:', error);
+      this.status.set('Upload failed');
+    } finally {
+      this.isUploading.set(false);
+      input.value = ''; // allow re-selecting the same file
+    }
+  }
+
+  protected removePending(fileId: string): void {
+    this.pendingAttachments.update(a => a.filter(att => att.fileId !== fileId));
   }
 
   private async runAgent(): Promise<void> {
@@ -703,7 +854,7 @@ export class ChatComponent {
     }
   }
 
-  protected addResource(value: string): void {
+  protected addSelectedResource(value: string): void {
     const trimmed = value.trim();
     if (!trimmed) return;
     this.conversationState.update((s: any) => ({
