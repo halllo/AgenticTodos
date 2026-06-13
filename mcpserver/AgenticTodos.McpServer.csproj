@@ -11,7 +11,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="ModelContextProtocol.AspNetCore" Version="1.3.0" />
+    <PackageReference Include="ModelContextProtocol.AspNetCore" Version="1.4.0" />
   </ItemGroup>
 
   <ItemGroup>
@@ -36,8 +36,7 @@
     <ItemGroup>
       <McpApp Include="get-time-app;threejs-app;pdf-viewer-app" />
     </ItemGroup>
-    <Exec Command="npm install" WorkingDirectory="$(MSBuildProjectDirectory)\%(McpApp.Identity)"
-          Condition="!Exists('$(MSBuildProjectDirectory)\%(McpApp.Identity)\node_modules')" />
+    <Exec Command="npm install" WorkingDirectory="$(MSBuildProjectDirectory)\%(McpApp.Identity)" Condition="!Exists('$(MSBuildProjectDirectory)\%(McpApp.Identity)\node_modules')" />
     <Exec Command="npm run build" WorkingDirectory="$(MSBuildProjectDirectory)\%(McpApp.Identity)" />
   </Target>
 

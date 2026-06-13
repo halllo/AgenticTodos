@@ -28,7 +28,7 @@ var backend = builder.AddProject<Projects.AgenticTodos_Backend>("AgenticTodos-Ba
     .PublishAsECSFargateServiceWithALB() //until https://github.com/aws/integrations-on-dotnet-aspire-for-aws/pull/200
     ;
 
-var element = builder.AddViteApp("AgenticTodos-Frontend", "../frontend")
+var frontend = builder.AddViteApp("AgenticTodos-Frontend", "../frontend")
     .WithEndpoint("http", (endpointAnnotation) =>
     {
         endpointAnnotation.Port = 3000;
