@@ -148,7 +148,6 @@ static IChatClient OpenAI(IConfiguration configuration, string applicationName)
         .GetChatClient("gpt-4o")
         .AsIChatClient()
         .AsBuilder()
-        .UseEUAIActClassification()
         .UseOpenTelemetry(sourceName: applicationName, configure: c => c.EnableSensitiveData = true)
         .Build()
         ;
@@ -168,7 +167,6 @@ static IChatClient AmazonBedrock(IConfiguration configuration, IServiceProvider 
             "eu.anthropic.claude-sonnet-4-5-20250929-v1:0"
         )
         .AsBuilder()
-        .UseEUAIActClassification()
         .UseOpenTelemetry(sourceName: applicationName, configure: c => c.EnableSensitiveData = true)
         // .ConfigureOptions(c =>
         // {
@@ -189,7 +187,7 @@ static IChatClient AmazonBedrock(IConfiguration configuration, IServiceProvider 
         ;
 }
 
-static AIAgent CreateAgent(IChatClient chatClient, AIFunction[] tools, IServiceProvider services)
+static AIAgent CreateAgent(IChatClient chatClient, AIFunction[] tools, IServiceProvider services, IChatClient? classifier = null)
 {
     var applicationName = services.GetRequiredService<IHostEnvironment>().ApplicationName;
     var fileStore = services.GetRequiredService<IUploadedFileStore>();
@@ -214,6 +212,7 @@ static AIAgent CreateAgent(IChatClient chatClient, AIFunction[] tools, IServiceP
         .Use(runFunc: StateSnapshotMiddleware.RunAsync, runStreamingFunc: StateSnapshotMiddleware.RunStreamingAsync)
         .UseDetectMcpAppsActivity()
         .UseEUAIActRiskActivity()
+        .Use(inner => inner.UseEUAIActClassification(classifier ?? chatClient))
         .Build(services);
 }
 

@@ -10,9 +10,10 @@ Injects additional AG-UI events into the SSE stream produced by `MapAGUI` withou
 
 | File | Role |
 |---|---|
-| `backend/SseInterceptorStream.cs` | Write-only `Stream` wrapper; buffers bytes, splits on `\n\n`, forwards original events, calls injector |
-| `backend/SseEventInjectionMiddleware.cs` | ASP.NET Core middleware; swaps `Response.Body`, holds the `InjectAfter` callback |
-| `backend/Program.cs` | Registers the middleware via `UseWhen` scoped to paths ending in `/agui` |
+| `backend/SseEventInjectionMiddleware.cs` | Abstract ASP.NET Core middleware; swaps `Response.Body` with a nested `SseInterceptorStream` (write-only `Stream` that buffers bytes, splits on `\n\n`, and calls the subclass's `Inject` per event), and converts eager downstream exceptions into a `RUN_STARTED` + `RUN_ERROR` pair |
+| `backend/ActivitySnapshotInjectionMiddleware.cs` | Concrete subclass registered on `/agui`; its `Inject`/`TryInject` routes each event through the activity-snapshot injectors (MCP apps first, then EU AI Act risk) |
+| `backend/McpAppsActivityInjector.cs`, `backend/EUAIActRiskActivityInjector.cs` | The individual injectors that `ActivitySnapshotInjectionMiddleware.TryInject` composes |
+| `backend/Program.cs` | Registers `ActivitySnapshotInjectionMiddleware` via `UseWhen` scoped to paths ending in `/agui` |
 
 ## How it works
 
@@ -25,32 +26,44 @@ Request → UseWhen (path ends with /agui?)
               ↓
          SseInterceptorStream intercepts each "data: {json}\n\n" event
               ↓
-         Forwards original event → calls InjectAfter(json) → writes injected events
+         Calls Inject(json): null → suppress · empty → forward unchanged · non-empty → replace
               ↓
          Response.Body restored
 ```
 
-## Customizing the injector
+## Adding an injector
 
-Edit `InjectAfter` in `backend/SseEventInjectionMiddleware.cs`:
+Subclass `SseEventInjectionMiddleware`, override `Inject`, and register the subclass in `Program.cs`:
 
 ```csharp
-private static IEnumerable<string> InjectAfter(string eventJson)
+internal sealed class MySnapshotMiddleware(RequestDelegate next)
+    : SseEventInjectionMiddleware(next)
 {
-    using JsonDocument doc = JsonDocument.Parse(eventJson);
-    if (!doc.RootElement.TryGetProperty("type", out JsonElement typeProp)) yield break;
+    protected override IEnumerable<string>? Inject(string eventJson)
+    {
+        using JsonDocument doc = JsonDocument.Parse(eventJson);
+        if (!doc.RootElement.TryGetProperty("type", out JsonElement typeProp))
+            return [];                                  // not ours — forward unchanged
 
-    // Inject after whichever event type you need:
-    if (typeProp.GetString() != "RUN_STARTED") yield break;
+        // Replace whichever event type you need:
+        if (typeProp.GetString() != "TEXT_MESSAGE_CONTENT") return [];
 
-    string msgId = Guid.NewGuid().ToString("N");
-    yield return JsonSerializer.Serialize(new { type = "TEXT_MESSAGE_START", messageId = msgId, role = "assistant" });
-    yield return JsonSerializer.Serialize(new { type = "TEXT_MESSAGE_CONTENT", messageId = msgId, delta = "..." });
-    yield return JsonSerializer.Serialize(new { type = "TEXT_MESSAGE_END", messageId = msgId });
+        string msgId = Guid.NewGuid().ToString("N");
+        return [JsonSerializer.Serialize(new { type = "ACTIVITY_SNAPSHOT", messageId = msgId /* ... */ })];
+    }
 }
+
+// Program.cs
+branch => branch.UseMiddleware<MySnapshotMiddleware>()
 ```
 
-Return zero strings to suppress injection for a given event. The injector receives the raw JSON payload (without the `data:` prefix) and returns JSON strings that are written as complete SSE events.
+`Inject` receives the raw JSON payload (without the `data:` prefix). Its return value controls what reaches the client:
+
+- `null` — suppress the original event (write nothing).
+- empty sequence — forward the original event unchanged.
+- non-empty sequence — suppress the original and emit these events instead (include the original in the list to keep it).
+
+To compose several injectors in one middleware, route between them inside `Inject` — see `ActivitySnapshotInjectionMiddleware.TryInject`, which tries the MCP-apps injector first and falls back to the EU AI Act risk injector.
 
 ## Constraints
 

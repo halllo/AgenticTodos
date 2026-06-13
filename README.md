@@ -130,7 +130,7 @@ Neither are great solutions, but good enough.
 
 ### ✅ Rendering MCP Apps in the frontend
 
-When the agent calls a tool that carries `ui.resourceUri` metadata in its MCP definition, the backend detects this via [`McpAppsActivityMiddleware`](backend/McpAppsActivityMiddleware.cs) and emits an `ACTIVITY_SNAPSHOT` AG-UI event carrying `resourceUri`, `toolInput`, and `toolResult`. The frontend renders the actual MCP app HTML inside a sandboxed double-iframe using the `@modelcontextprotocol/ext-apps` AppBridge protocol.
+When the agent calls a tool that carries `ui.resourceUri` metadata in its MCP definition, the backend detects this via [`DetectMcpAppsActivityMiddleware`](backend/DetectMcpAppsActivityMiddleware.cs), which emits a marker that the SSE injection pipeline rewrites into an `ACTIVITY_SNAPSHOT` AG-UI event carrying `resourceUri`, `toolInput`, and `toolResult`. The frontend renders the actual MCP app HTML inside a sandboxed double-iframe using the `@modelcontextprotocol/ext-apps` AppBridge protocol.
 
 **Security model — double-iframe with cross-origin sandbox:**
 

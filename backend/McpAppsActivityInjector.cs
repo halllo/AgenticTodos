@@ -7,9 +7,8 @@ namespace AgenticTodos.Backend;
 /// <c>TEXT_MESSAGE_CONTENT</c> events whose <c>delta</c> carries an <c>mcp-activity</c> marker
 /// with proper <c>ACTIVITY_SNAPSHOT</c> events.
 /// <para>
-/// Pass <see cref="TryInjectActivitySnapshot"/> as the injector argument to
-/// <see cref="SseEventInjectionMiddleware"/>:
-/// <code>branch.UseMiddleware&lt;SseEventInjectionMiddleware&gt;(McpAppsActivityInjector.TryInjectActivitySnapshot)</code>
+/// Composed into the <c>/agui</c> SSE stream by <see cref="ActivitySnapshotInjectionMiddleware"/>,
+/// whose <c>TryInject</c> calls <see cref="TryInjectActivitySnapshot"/> before the EU AI Act risk injector.
 /// </para>
 /// </summary>
 internal static class McpAppsActivityInjector
