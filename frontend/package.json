@@ -23,29 +23,29 @@
     ]
   },
   "private": true,
-  "packageManager": "npm@11.14.0",
+  "packageManager": "npm@11.17.0",
   "dependencies": {
-    "@ag-ui/client": "^0.0.53",
-    "@ag-ui/core": "^0.0.53",
-    "@angular/common": "^21.2.12",
-    "@angular/compiler": "^21.2.12",
-    "@angular/core": "^21.2.12",
-    "@angular/forms": "^21.2.12",
-    "@angular/platform-browser": "^21.2.12",
-    "@angular/router": "^21.2.12",
-    "@mcp-b/global": "^2.3.1",
-    "@mcp-b/transports": "^2.3.1",
-    "@modelcontextprotocol/ext-apps": "^1.7.1",
+    "@ag-ui/client": "^0.0.57",
+    "@ag-ui/core": "^0.0.57",
+    "@angular/common": "^22.0.1",
+    "@angular/compiler": "^22.0.1",
+    "@angular/core": "^22.0.1",
+    "@angular/forms": "^22.0.1",
+    "@angular/platform-browser": "^22.0.1",
+    "@angular/router": "^22.0.1",
+    "@mcp-b/global": "^3.0.0",
+    "@mcp-b/transports": "^3.0.0",
+    "@modelcontextprotocol/ext-apps": "^1.7.4",
     "rxjs": "~7.8.2",
     "tslib": "^2.8.1"
   },
   "devDependencies": {
-    "@angular/build": "^21.2.10",
-    "@angular/cli": "^21.2.10",
-    "@angular/compiler-cli": "^21.2.12",
+    "@angular/build": "^22.0.1",
+    "@angular/cli": "^22.0.1",
+    "@angular/compiler-cli": "^22.0.1",
     "esbuild": "latest",
     "jsdom": "^29.1.1",
-    "typescript": "~5.9.0",
-    "vitest": "^4.1.5"
+    "typescript": "~6.0.3",
+    "vitest": "^4.1.8"
   }
 }

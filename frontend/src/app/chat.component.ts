@@ -712,8 +712,8 @@ export class ChatComponent {
         this.conversationState.set(event.snapshot);
         return { state: event.snapshot };
       },
-      onRunFinishedEvent: async ({ result, event }) => {
-        console.log('Run finished', result, event);
+      onRunFinishedEvent: async ({ event }) => {
+        console.log('Run finished', event.result, event);
         this.isLoading.set(false);
 
         // Batch execute all pending frontend tool calls

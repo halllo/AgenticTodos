@@ -15,6 +15,8 @@ export class WebmcpService {
   readonly tools = this.toolsSignal.asReadonly();
 
   private registeredTools: string[] = [];
+  // WebMCP v3 unregisters tools by aborting the signal passed to registerTool.
+  private toolRegistrationController = new AbortController();
 
   registerTool(registerableTool: { name: string; description: string, inputSchema?: any, execute: (args: Record<string, any>) => Promise<string> }) {
     const webmcp = navigator.modelContext;
@@ -33,7 +35,7 @@ export class WebmcpService {
             content: [{ type: "text", text: result }],
           };
         }
-      });
+      }, { signal: this.toolRegistrationController.signal });
       this.registeredTools.push(registerableTool.name);
       console.log("WebMCP tool registered", registerableTool.name);
     } else {
@@ -42,13 +44,9 @@ export class WebmcpService {
   }
 
   unregisterTools() {
-    for (const handle of this.registeredTools) {
-      try {
-        navigator.modelContext?.unregisterTool(handle);
-      } catch {
-        // ignore cleanup errors
-      }
-    }
+    // Aborting the shared signal unregisters every tool registered with it.
+    this.toolRegistrationController.abort();
+    this.toolRegistrationController = new AbortController();
     this.registeredTools = [];
   }
 
