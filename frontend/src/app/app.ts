@@ -2,17 +2,19 @@ import { ChangeDetectionStrategy, Component, inject, OnDestroy, OnInit, signal, 
 import { RouterOutlet } from '@angular/router';
 import { ChatComponent } from './chat.component';
 import { TodosComponent } from './todos.component';
+import { ResizerComponent } from './resizer.component';
 import { WebmcpService } from './webmcp.service';
 
 @Component({
   selector: 'app-root',
-  imports: [RouterOutlet, ChatComponent, TodosComponent],
+  imports: [RouterOutlet, ChatComponent, TodosComponent, ResizerComponent],
   template: `
     <div class="app">
-      <div class="app__leftPanel" [style.background]="leftPanelBackground()">
+      <div class="app__leftPanel" #leftPanel [style.background]="leftPanelBackground()">
         <app-todos #todos />
       </div>
-      <div class="app__rightPanel">
+      <app-resizer [leftPanel]="leftPanel" [rightPanel]="rightPanel" />
+      <div class="app__rightPanel" #rightPanel>
         <app-chat/>
       </div>
     </div>
@@ -39,7 +41,7 @@ import { WebmcpService } from './webmcp.service';
     }
 
     .app__rightPanel {
-      flex: 1;
+      flex: 2;
       display: flex;
       flex-direction: column;
       align-items: stretch;

@@ -1,8 +1,8 @@
 using AgenticTodos.Backend;
 using Amazon.BedrockRuntime;
+using EUAIActClassifier;
 using Microsoft.Agents.AI;
 using Microsoft.Agents.AI.Hosting;
-using Microsoft.Agents.AI.Hosting.AGUI.AspNetCore;
 using Microsoft.Extensions.AI;
 using ModelContextProtocol.Client;
 using OpenAI;
@@ -67,7 +67,7 @@ app.UseStaticFiles();
 // Inject unsupported AGUI events for endpoints ending with "/agui"
 app.UseWhen(
     ctx => ctx.Request.Path.Value?.EndsWith("/agui", StringComparison.OrdinalIgnoreCase) == true,
-    branch => branch.UseMiddleware<SseEventInjectionMiddleware>((Func<string, IEnumerable<string>?>)McpAppsActivityInjector.TryInjectActivitySnapshot)
+    branch => branch.UseMiddleware<ActivitySnapshotInjectionMiddleware>()
 );
 
 // Transparent HTTP proxy that forwards MCP Streamable HTTP traffic to the MCP server.
@@ -148,6 +148,7 @@ static IChatClient OpenAI(IConfiguration configuration, string applicationName)
         .GetChatClient("gpt-4o")
         .AsIChatClient()
         .AsBuilder()
+        .UseEUAIActClassification()
         .UseOpenTelemetry(sourceName: applicationName, configure: c => c.EnableSensitiveData = true)
         .Build()
         ;
@@ -167,6 +168,7 @@ static IChatClient AmazonBedrock(IConfiguration configuration, IServiceProvider 
             "eu.anthropic.claude-sonnet-4-5-20250929-v1:0"
         )
         .AsBuilder()
+        .UseEUAIActClassification()
         .UseOpenTelemetry(sourceName: applicationName, configure: c => c.EnableSensitiveData = true)
         // .ConfigureOptions(c =>
         // {
@@ -211,6 +213,7 @@ static AIAgent CreateAgent(IChatClient chatClient, AIFunction[] tools, IServiceP
         .Use(sharedFunc: OmitEmptySystemMessagesMiddleware.Invoke)
         .Use(runFunc: StateSnapshotMiddleware.RunAsync, runStreamingFunc: StateSnapshotMiddleware.RunStreamingAsync)
         .UseDetectMcpAppsActivity()
+        .UseEUAIActRiskActivity()
         .Build(services);
 }
 

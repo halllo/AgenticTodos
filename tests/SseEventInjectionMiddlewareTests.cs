@@ -314,8 +314,16 @@ public class SseEventInjectionMiddlewareInvokeTests
         var responseBody = new MemoryStream();
         var context = new DefaultHttpContext();
         context.Response.Body = responseBody;
-        var middleware = new SseEventInjectionMiddleware(next, injector ?? s_passThrough);
+        var middleware = new TestMiddleware(next, injector ?? s_passThrough);
         return (middleware, context, responseBody);
+    }
+
+    // Concrete subclass that routes the abstract Inject extension point to a supplied delegate,
+    // so the plumbing in the abstract base can be exercised with arbitrary injection behaviour.
+    private sealed class TestMiddleware(RequestDelegate next, Func<string, IEnumerable<string>?> injector)
+        : SseEventInjectionMiddleware(next)
+    {
+        protected override IEnumerable<string>? Inject(string eventJson) => injector(eventJson);
     }
 
     private static List<JsonElement> ParseSseEvents(MemoryStream stream)

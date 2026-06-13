@@ -15,8 +15,14 @@ interface Attachment {
   fileName: string;
 }
 
+interface RiskClassification {
+  risk: string;
+  category: string;
+  reason: string;
+}
+
 interface MessageViewModel {
-  role: 'user' | 'assistant' | 'tool' | 'activity';
+  role: 'user' | 'assistant' | 'tool' | 'activity' | 'risk';
   content: string;
   toolName?: string;
   toolCallId?: string;
@@ -28,6 +34,7 @@ interface MessageViewModel {
   toolInput?: Record<string, unknown>;
   toolResult?: unknown;
   attachments?: Attachment[];
+  risk?: RiskClassification;
 }
 
 @Component({
@@ -69,6 +76,8 @@ interface MessageViewModel {
             [class.chat__message--assistant]="message.role === 'assistant'"
             [class.chat__message--tool]="message.role === 'tool'"
             [class.chat__message--activity]="message.role === 'activity'"
+            [class.chat__message--risk]="message.role === 'risk'"
+            [class.chat__message--risk-critical]="message.role === 'risk' && message.risk?.risk === 'Unacceptable'"
             [class.chat__message--error]="message.error"
           >
             <div class="chat__avatar">
@@ -80,6 +89,8 @@ interface MessageViewModel {
                 🛠️
               } @else if (message.role === 'activity') {
                 🔌
+              } @else if (message.role === 'risk') {
+                ⚠️
               }
             </div>
             <div class="chat__content" [class.chat__content--generating]="message.isGenerating">
@@ -94,6 +105,14 @@ interface MessageViewModel {
                   [toolInput]="message.toolInput ?? {}"
                   [toolResult]="message.toolResult"
                 />
+              } @else if (message.role === 'risk') {
+                <span class="chat__riskBadge">EU AI Act · {{ message.risk?.risk }} risk</span>
+                @if (message.risk?.category) {
+                  <div class="chat__riskCategory">{{ message.risk.category }}</div>
+                }
+                @if (message.risk?.reason) {
+                  <div class="chat__riskReason">{{ message.risk.reason }}</div>
+                }
               } @else {
                 {{ message.content }}
                 @if (message.attachments?.length) {
@@ -555,6 +574,51 @@ interface MessageViewModel {
       margin-right: 0.5em;
       color: #00796b;
     }
+
+    .chat__message.chat__message--risk {
+      .chat__content {
+        width: 100%;
+        background: #fff3e0;
+        color: #e65100;
+        border: 1px solid #ffb74d;
+        border-radius: 4px 8px 18px 18px;
+        font-size: 0.875rem;
+      }
+      .chat__avatar {
+        background: #fff3e0;
+        color: #e65100;
+      }
+    }
+
+    .chat__message.chat__message--risk-critical {
+      .chat__content {
+        background: #ffebee;
+        color: #b71c1c;
+        border-color: #ef9a9a;
+      }
+      .chat__avatar {
+        background: #ffebee;
+        color: #b71c1c;
+      }
+    }
+
+    .chat__riskBadge {
+      display: inline-block;
+      font-weight: 700;
+      font-size: 0.8rem;
+      letter-spacing: 0.02em;
+      text-transform: uppercase;
+    }
+
+    .chat__riskCategory {
+      margin-top: 0.35rem;
+      font-weight: 600;
+    }
+
+    .chat__riskReason {
+      margin-top: 0.25rem;
+      opacity: 0.9;
+    }
   `,
 })
 export class ChatComponent {
@@ -610,10 +674,13 @@ export class ChatComponent {
         this.status.set('Assistant is typing...');
         this.messages.update(msgs => ([...msgs, { role: 'assistant', content: '', isGenerating: true }]));
       },
-      onTextMessageContentEvent: ({ textMessageBuffer }) => {
+      onTextMessageContentEvent: ({ textMessageBuffer, event }) => {
+        // textMessageBuffer holds content BEFORE this delta; append event.delta
+        // to keep the streamed message from lagging one chunk behind.
+        const content = textMessageBuffer + event.delta;
         this.updateLastAssistantMessage(
-          msg => ({ ...msg, content: textMessageBuffer }),
-          { role: 'assistant', content: textMessageBuffer }
+          msg => ({ ...msg, content }),
+          { role: 'assistant', content }
         );
       },
       onTextMessageEndEvent: async ({ textMessageBuffer }) => {
@@ -689,24 +756,41 @@ export class ChatComponent {
       },
       onActivitySnapshotEvent: ({ event }) => {
         const content = event.content as Record<string, unknown>;
-        const resourceUri = typeof content?.['resourceUri'] === 'string' ? content['resourceUri'] : undefined;
-        const toolInput = content?.['toolInput'] as Record<string, unknown> | undefined;
-        const toolResult = content?.['result'];
-        const existing = this.messages().findIndex(m => m.role === 'activity' && m.messageId === event.messageId);
-        const vm: MessageViewModel = {
-          role: 'activity',
-          content: JSON.stringify(content, null, 2),
-          activityType: event.activityType,
-          resourceUri,
-          messageId: event.messageId,
-          toolInput,
-          toolResult,
-        };
-        if (existing >= 0) {
-          this.messages.update(msgs => msgs.map((m, i) => i === existing ? vm : m));
-        } else {
-          this.messages.update(msgs => [...msgs, vm]);
+
+        // EU AI Act risk classification — only emitted by the backend for High risk or above.
+        if (event.activityType === 'eu-ai-act-risk') {
+          this.upsertActivityMessage(event.messageId, {
+            role: 'risk',
+            content: '',
+            activityType: event.activityType,
+            messageId: event.messageId,
+            risk: {
+              risk: typeof content?.['risk'] === 'string' ? content['risk'] : 'Unknown',
+              category: typeof content?.['category'] === 'string' ? content['category'] : '',
+              reason: typeof content?.['reason'] === 'string' ? content['reason'] : '',
+            },
+          });
+          return;
         }
+
+        // MCP Apps — interactive UI resource rendered inline.
+        if (event.activityType === 'mcp-apps') {
+          const resourceUri = typeof content?.['resourceUri'] === 'string' ? content['resourceUri'] : undefined;
+          const toolInput = content?.['toolInput'] as Record<string, unknown> | undefined;
+          const toolResult = content?.['result'];
+          this.upsertActivityMessage(event.messageId, {
+            role: 'activity',
+            content: JSON.stringify(content, null, 2),
+            activityType: event.activityType,
+            resourceUri,
+            messageId: event.messageId,
+            toolInput,
+            toolResult,
+          });
+          return;
+        }
+
+        console.warn('Unhandled activity snapshot type:', event.activityType);
       },
       onStateSnapshotEvent: ({ event }) => {
         this.conversationState.set(event.snapshot);
@@ -908,6 +992,19 @@ export class ChatComponent {
           ...msgs.slice(lastIdx + 1)
         ];
     });
+  }
+
+  // Activity snapshots (MCP apps, EU AI Act risk) replace in place when re-sent with the same
+  // messageId, otherwise they are appended.
+  private upsertActivityMessage(messageId: string | undefined, vm: MessageViewModel): void {
+    const existing = messageId === undefined ? -1 : this.messages().findIndex(
+      m => (m.role === 'activity' || m.role === 'risk') && m.messageId === messageId
+    );
+    if (existing >= 0) {
+      this.messages.update(msgs => msgs.map((m, i) => i === existing ? vm : m));
+    } else {
+      this.messages.update(msgs => [...msgs, vm]);
+    }
   }
 
   private scrollToBottom(): void {

@@ -6,8 +6,8 @@ namespace AgenticTodos.Backend;
 
 /// <summary>
 /// ASP.NET Core middleware that uses <see cref="SseInterceptorStream"/> to intercept SSE
-/// responses and apply a caller-supplied injector to each <c>data:</c> event. The injector
-/// can suppress, forward, or replace events.
+/// responses and apply the subclass's <see cref="Inject"/> transform to each <c>data:</c> event.
+/// The transform can suppress, forward, or replace events.
 /// <para>
 /// Exceptions thrown by downstream handlers before any SSE streaming begins (i.e. "eager"
 /// failures such as session-store errors) are caught here and emitted as a
@@ -15,18 +15,23 @@ namespace AgenticTodos.Backend;
 /// AG-UI error instead of a bare 500.
 /// </para>
 /// <para>
-/// Register via <c>UseWhen</c> and pass the injector as an extra constructor argument:
-/// <code>branch.UseMiddleware&lt;SseEventInjectionMiddleware&gt;(MyInjector.Transform)</code>
+/// Abstract: subclass it, override <see cref="Inject"/> to supply the per-event transform, and
+/// register the subclass via <c>UseWhen</c>/<c>UseMiddleware</c>:
+/// <code>branch.UseMiddleware&lt;MySnapshotMiddleware&gt;()</code>
 /// </para>
 /// </summary>
-[SuppressMessage("Performance", "CA1812:Avoid uninstantiated internal classes",
-    Justification = "Instantiated by ASP.NET Core via UseMiddleware<T>")]
-internal sealed class SseEventInjectionMiddleware(RequestDelegate next, Func<string, IEnumerable<string>?> injector)
+internal abstract class SseEventInjectionMiddleware(RequestDelegate next)
 {
+    /// <summary>
+    /// Transforms a single SSE <c>data:</c> event payload. Return <c>null</c> to suppress the event,
+    /// an empty sequence to forward it unchanged, or a non-empty sequence to emit replacements.
+    /// </summary>
+    protected abstract IEnumerable<string>? Inject(string eventJson);
+
     public async Task InvokeAsync(HttpContext context)
     {
         Stream originalBody = context.Response.Body;
-        using var interceptor = new SseInterceptorStream(originalBody, injector);
+        using var interceptor = new SseInterceptorStream(originalBody, Inject);
         context.Response.Body = interceptor;
         bool earlyError = false;
         try

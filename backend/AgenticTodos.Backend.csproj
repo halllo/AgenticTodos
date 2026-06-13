@@ -19,11 +19,17 @@
 
   <ItemGroup>
     <PackageReference Include="AWSSDK.Extensions.Bedrock.MEAI" Version="4.0.8.10" />
+    <PackageReference Include="EUAIActClassifier" Version="0.0.1" />
     <PackageReference Include="Microsoft.Agents.AI.AGUI" Version="1.10.0-preview.260610.1" />
     <PackageReference Include="Microsoft.Agents.AI.DevUI" Version="1.10.0-preview.260610.1" />
     <PackageReference Include="Microsoft.Agents.AI.Hosting.AGUI.AspNetCore" Version="1.10.0-preview.260610.1" />
     <PackageReference Include="Microsoft.Agents.AI.OpenAI" Version="1.10.0" />
     <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.9" />
+    <!-- EUAIActClassifier is built for netstandard2.0 and hard-references Microsoft.Bcl.AsyncInterfaces
+         (IAsyncEnumerable), but doesn't declare it as a package dependency. On net10.0 those types are
+         in-box so the transitive reference is dropped, leaving the facade out of the output. Reference
+         it explicitly so the assembly the netstandard2.0 build expects ships with the app. -->
+    <PackageReference Include="Microsoft.Bcl.AsyncInterfaces" Version="10.0.9" />
     <PackageReference Include="Microsoft.Extensions.AI" Version="10.7.0" />
     <PackageReference Include="ModelContextProtocol.AspNetCore" Version="1.4.0" />
     <PackageReference Include="Scalar.AspNetCore" Version="2.16.3" />
