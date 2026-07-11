@@ -1,4 +1,5 @@
 using System.Text.Json;
+using AgenticTodos.Backend;
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
 
@@ -62,9 +63,15 @@ public abstract class IOChatHistoryProvider : ChatHistoryProvider
     {
         var state = this.sessionState.GetOrInitializeState(context.Session);
 
-        return await Read<List<ChatMessage>>($"{state.StoreId}_compacted.json")
+        var history = await Read<List<ChatMessage>>($"{state.StoreId}_compacted.json")
             ?? await Read<List<ChatMessage>>($"{state.StoreId}_full.json")
             ?? [];
+
+        // Restore redacted-thinking byte[] payloads that the JSON round-trip degrades to JsonElement,
+        // so extended-thinking (Claude on Bedrock) history replays without a provider validation error.
+        RedactedReasoningNormalizer.Normalize(history);
+
+        return history;
     }
 
     protected override async ValueTask StoreChatHistoryAsync(InvokedContext context, CancellationToken cancellationToken = default)

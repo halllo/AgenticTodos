@@ -1,4 +1,4 @@
-import { ChangeDetectionStrategy, Component, effect, ElementRef, inject, linkedSignal, resource, signal, untracked, viewChild } from '@angular/core';
+import { ChangeDetectionStrategy, Component, computed, effect, ElementRef, inject, linkedSignal, resource, signal, untracked, viewChild } from '@angular/core';
 import { httpResource } from '@angular/common/http';
 import { HttpAgent, Message, RunAgentParameters } from "@ag-ui/client"
 import { JsonPipe } from '@angular/common';
@@ -22,7 +22,7 @@ interface RiskClassification {
 }
 
 interface MessageViewModel {
-  role: 'user' | 'assistant' | 'tool' | 'activity' | 'risk';
+  role: 'user' | 'assistant' | 'tool' | 'activity' | 'risk' | 'reasoning';
   content: string;
   toolName?: string;
   toolCallId?: string;
@@ -35,6 +35,8 @@ interface MessageViewModel {
   toolResult?: unknown;
   attachments?: Attachment[];
   risk?: RiskClassification;
+  collapsed?: boolean;
+  userToggled?: boolean;
 }
 
 @Component({
@@ -76,6 +78,7 @@ interface MessageViewModel {
             [class.chat__message--assistant]="message.role === 'assistant'"
             [class.chat__message--tool]="message.role === 'tool'"
             [class.chat__message--activity]="message.role === 'activity'"
+            [class.chat__message--reasoning]="message.role === 'reasoning'"
             [class.chat__message--risk]="message.role === 'risk'"
             [class.chat__message--risk-critical]="message.role === 'risk' && message.risk?.risk === 'Unacceptable'"
             [class.chat__message--error]="message.error"
@@ -89,6 +92,8 @@ interface MessageViewModel {
                 🛠️
               } @else if (message.role === 'activity') {
                 🔌
+              } @else if (message.role === 'reasoning') {
+                🧠
               } @else if (message.role === 'risk') {
                 ⚠️
               }
@@ -105,6 +110,22 @@ interface MessageViewModel {
                   [toolInput]="message.toolInput ?? {}"
                   [toolResult]="message.toolResult"
                 />
+              } @else if (message.role === 'reasoning') {
+                <button
+                  type="button"
+                  class="chat__reasoningToggle"
+                  [attr.aria-expanded]="!message.collapsed"
+                  [attr.aria-controls]="'reasoning-' + message.messageId"
+                  (click)="toggleReasoning(message.messageId)"
+                >
+                  <span class="chat__reasoningChevron" [class.chat__reasoningChevron--open]="!message.collapsed" aria-hidden="true">▸</span>
+                  <span class="chat__reasoningLabel" [class.chat__reasoningLabel--live]="message.isGenerating">
+                    {{ message.isGenerating ? 'Thinking…' : 'Thought process' }}
+                  </span>
+                </button>
+                @if (!message.collapsed) {
+                  <div class="chat__reasoningBody" [id]="'reasoning-' + message.messageId">{{ message.content }}</div>
+                }
               } @else if (message.role === 'risk') {
                 <span class="chat__riskBadge">EU AI Act · {{ message.risk?.risk }} risk</span>
                 @if (message.risk?.category) {
@@ -129,7 +150,7 @@ interface MessageViewModel {
           </div>
         }
 
-        @if (isLoading()) {
+        @if (showTypingIndicator()) {
           <div class="chat__message chat__message--assistant">
             <div class="chat__avatar">🤖</div>
             <div class="chat__content">
@@ -575,6 +596,72 @@ interface MessageViewModel {
       color: #00796b;
     }
 
+    .chat__message.chat__message--reasoning {
+      .chat__content {
+        width: 100%;
+        background: repeating-linear-gradient(
+          -45deg,
+          #f5f3ff,
+          #f5f3ff 10px,
+          #f8f6ff 10px,
+          #f8f6ff 20px
+        );
+        color: #5b21b6;
+        border: 1px dashed #c4b5fd;
+        border-radius: 4px 8px 18px 18px;
+        font-size: 0.875rem;
+      }
+      .chat__avatar {
+        background: #f5f3ff;
+        color: #5b21b6;
+      }
+    }
+
+    .chat__reasoningToggle {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.4rem;
+      border: none;
+      background: transparent;
+      padding: 0;
+      cursor: pointer;
+      color: inherit;
+      font-size: 0.8rem;
+      font-weight: 600;
+      letter-spacing: 0.01em;
+    }
+
+    .chat__reasoningChevron {
+      display: inline-block;
+      transition: transform 0.2s ease;
+      font-size: 0.7rem;
+
+      &.chat__reasoningChevron--open {
+        transform: rotate(90deg);
+      }
+    }
+
+    .chat__reasoningLabel--live {
+      animation: reasoningPulse 1.4s ease-in-out infinite;
+    }
+
+    @keyframes reasoningPulse {
+      0% { opacity: 0.5; }
+      50% { opacity: 1; }
+      100% { opacity: 0.5; }
+    }
+
+    .chat__reasoningBody {
+      margin-top: 0.5rem;
+      padding-top: 0.5rem;
+      border-top: 1px dashed #c4b5fd;
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-style: italic;
+      line-height: 1.5;
+      opacity: 0.92;
+    }
+
     .chat__message.chat__message--risk {
       .chat__content {
         width: 100%;
@@ -636,6 +723,15 @@ export class ChatComponent {
   protected readonly isUploading = signal(false);
   protected readonly conversationState = signal<unknown>({ conversation: { selectedResources: [], counter: 0 } });
 
+  // The standalone "typing" dots signal that the model is working. While a reasoning or assistant
+  // bubble is actively streaming, that bubble is itself the activity indicator, so suppress the
+  // redundant dots (otherwise a "Thinking…" bubble, a streaming answer and the dots show at once).
+  protected readonly showTypingIndicator = computed(() => {
+    if (!this.isLoading()) return false;
+    const last = this.messages().at(-1);
+    return !(last?.isGenerating === true && (last.role === 'assistant' || last.role === 'reasoning'));
+  });
+
   protected readonly agents = httpResource<string[]>(() => '/agents');
   protected readonly selectedAgent = linkedSignal<string | undefined>(() => this.agents.value()?.[0]);
 
@@ -690,6 +786,30 @@ export class ChatComponent {
           { role: 'assistant', content: textMessageBuffer, isGenerating: false }
         );
         this.status.set('Ready to chat');
+      },
+      onReasoningStartEvent: ({ event }) => {
+        console.log('Reasoning started:', event);
+        this.status.set('Assistant is thinking...');
+      },
+      onReasoningMessageContentEvent: ({ reasoningMessageBuffer, event }) => {
+        // reasoningMessageBuffer holds content BEFORE this delta; append event.delta.
+        const content = reasoningMessageBuffer + event.delta;
+        this.upsertReasoningMessage(event.messageId, msg => ({ ...msg, content, isGenerating: true }));
+      },
+      onReasoningMessageEndEvent: ({ reasoningMessageBuffer, event }) => {
+        // Nothing visible was streamed (e.g. encrypted/redacted thinking) — no bubble to finalize.
+        if (!reasoningMessageBuffer.trim()) return;
+        // Collapse the finished thought so the answer stays front and center — unless the user
+        // has already toggled it themselves, in which case respect their choice.
+        this.upsertReasoningMessage(event.messageId, msg => ({
+          ...msg,
+          content: reasoningMessageBuffer,
+          isGenerating: false,
+          collapsed: msg.userToggled ? msg.collapsed : true,
+        }));
+      },
+      onReasoningEndEvent: ({ event }) => {
+        console.log('Reasoning ended:', event);
       },
       onToolCallStartEvent: ({ event }) => {
         // Add a tool message to the chat for any tool call (local or backend)
@@ -992,6 +1112,26 @@ export class ChatComponent {
           ...msgs.slice(lastIdx + 1)
         ];
     });
+  }
+
+  private upsertReasoningMessage(messageId: string, updateFn: (msg: MessageViewModel) => MessageViewModel): void {
+    this.messages.update(msgs => {
+      const idx = msgs.findIndex(m => m.role === 'reasoning' && m.messageId === messageId);
+      if (idx < 0) {
+        return [...msgs, updateFn({ role: 'reasoning', content: '', isGenerating: true, collapsed: false, messageId })];
+      }
+      return [...msgs.slice(0, idx), updateFn(msgs[idx]), ...msgs.slice(idx + 1)];
+    });
+  }
+
+  protected toggleReasoning(messageId: string | undefined): void {
+    if (messageId === undefined) return;
+    // Mark userToggled so a completing reasoning block won't auto-collapse out from under the reader.
+    this.messages.update(msgs => msgs.map(m =>
+      m.role === 'reasoning' && m.messageId === messageId
+        ? { ...m, collapsed: !m.collapsed, userToggled: true }
+        : m
+    ));
   }
 
   // Activity snapshots (MCP apps, EU AI Act risk) replace in place when re-sent with the same

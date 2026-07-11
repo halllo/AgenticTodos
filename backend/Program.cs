@@ -24,7 +24,8 @@ builder.Services.AddKeyedSingleton("openai", (sp, key) => CreateAgent(
 builder.Services.AddKeyedSingleton("amazonbedrock", (sp, key) => CreateAgent(
     chatClient: AmazonBedrock(builder.Configuration, sp),
     tools: sp.GetRequiredService<Lazy<Task<AIFunction[]>>>().Value.GetAwaiter().GetResult(),
-    services: sp));
+    services: sp,
+    reasoning: new ReasoningOptions { Effort = ReasoningEffort.Medium, Output = ReasoningOutput.Full }));
 
 builder.Services.AddKeyedSingleton("agentAliases", builder.Services
     .Where(sd => sd.IsKeyedService && sd.ServiceType == typeof(AIAgent))
@@ -164,7 +165,8 @@ static IChatClient AmazonBedrock(IConfiguration configuration, IServiceProvider 
     return runtime
         .AsIChatClient(defaultModelId:
             //"eu.anthropic.claude-sonnet-4-20250514-v1:0"
-            "eu.anthropic.claude-sonnet-4-5-20250929-v1:0"
+            // "eu.anthropic.claude-sonnet-4-5-20250929-v1:0"
+            "eu.anthropic.claude-sonnet-4-6"
         )
         .AsBuilder()
         .UseOpenTelemetry(sourceName: applicationName, configure: c => c.EnableSensitiveData = true)
@@ -187,7 +189,7 @@ static IChatClient AmazonBedrock(IConfiguration configuration, IServiceProvider 
         ;
 }
 
-static AIAgent CreateAgent(IChatClient chatClient, AIFunction[] tools, IServiceProvider services, IChatClient? classifier = null)
+static AIAgent CreateAgent(IChatClient chatClient, AIFunction[] tools, IServiceProvider services, IChatClient? classifier = null, ReasoningOptions? reasoning = null)
 {
     var applicationName = services.GetRequiredService<IHostEnvironment>().ApplicationName;
     var fileStore = services.GetRequiredService<IUploadedFileStore>();
@@ -199,6 +201,7 @@ static AIAgent CreateAgent(IChatClient chatClient, AIFunction[] tools, IServiceP
                 ChatOptions = new ChatOptions()
                 {
                     Tools = tools,
+                    Reasoning = reasoning,
                 },
                 ChatHistoryProvider = new FileSystemChatHistoryProvider(), // DevUI uses InMemoryResponsesService, which stores/loads directly with IConversationStorage.
                 AIContextProviders = [],

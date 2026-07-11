@@ -151,6 +151,20 @@ The frontend's [`McpClientService`](frontend/src/app/mcp-client.service.ts) crea
 
 ![get-time MCP App](mcp-app-get-time.png)
 
+### ✅ Extended thinking (reasoning) support
+
+The Bedrock agent (Claude Sonnet) is configured with `ChatOptions.Reasoning = new ReasoningOptions { Effort = ReasoningEffort.Medium, Output = ReasoningOutput.Full }` in [`backend/Program.cs`](backend/Program.cs). The `AWSSDK.Extensions.Bedrock.MEAI` adapter maps this to `AdditionalModelRequestFields["thinking"] = { type: "enabled", budget_tokens: 8192 }` (Medium, no explicit `MaxTokens` ⇒ `MaxTokens` is auto-raised to 32768). The model then streams its chain-of-thought as `TextReasoningContent`, which the `Microsoft.Agents.AI.AGUI` extension emits as a distinct block of AG-UI events:
+
+```text
+REASONING_START → REASONING_MESSAGE_START (role:"reasoning") → REASONING_MESSAGE_CONTENT* → [REASONING_ENCRYPTED_VALUE] → REASONING_MESSAGE_END → REASONING_END
+```
+
+followed by the usual `TEXT_MESSAGE_*` answer. `gpt-4o` is not a reasoning model, so the OpenAI agent is left without `ReasoningOptions` (sending `reasoning_effort` to it would be a 400).
+
+The frontend ([`chat.component.ts`](frontend/src/app/chat.component.ts)) subscribes to the `onReasoning*` handlers of `@ag-ui/client` and renders the thought as a collapsible 🧠 "thought process" disclosure — created lazily on the first content delta (so a repeated start or a fully-redacted/empty block never leaves a stray bubble), streamed live, then auto-collapsed on completion.
+
+**Gotcha — redacted-thinking persistence.** The AWS adapter stores a `redacted_thinking` payload as a `byte[]` under `AIContent.AdditionalProperties["RedactedContent"]` and only rebuilds the outbound block when that slot is still a `byte[]`. Persisting history as JSON ([`FileSystemChatHistoryProvider`](backend/FileSystemChatHistoryProvider.cs)) degrades the `byte[]` to a base64 `JsonElement`, which would break every subsequent turn of the conversation. [`RedactedReasoningNormalizer`](backend/RedactedReasoningNormalizer.cs) restores it on load (normal thinking is unaffected — its signature lives in the plain-string `ProtectedData`). Covered by [`RedactedReasoningNormalizerTests`](tests/RedactedReasoningNormalizerTests.cs).
+
 ### ✅ AGUI routing agent intercepts `/agents/mcp-relay`
 
 `app.MapAGUIViaHttpRoutingAgent()` registers middleware that handles all `/agents/*` paths. If the MCP relay (`app.Map("/agents/mcp-relay", ...)`) is placed after it, the routing agent intercepts requests first and returns 405 for HTTP methods it doesn't support (GET, which the MCP Streamable HTTP transport uses for SSE).
