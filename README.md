@@ -153,13 +153,15 @@ The frontend's [`McpClientService`](frontend/src/app/mcp-client.service.ts) crea
 
 ### ✅ Extended thinking (reasoning) support
 
-The Bedrock agent (Claude Sonnet) is configured with `ChatOptions.Reasoning = new ReasoningOptions { Effort = ReasoningEffort.Medium, Output = ReasoningOutput.Full }` in [`backend/Program.cs`](backend/Program.cs). The `AWSSDK.Extensions.Bedrock.MEAI` adapter maps this to `AdditionalModelRequestFields["thinking"] = { type: "enabled", budget_tokens: 8192 }` (Medium, no explicit `MaxTokens` ⇒ `MaxTokens` is auto-raised to 32768). The model then streams its chain-of-thought as `TextReasoningContent`, which the `Microsoft.Agents.AI.AGUI` extension emits as a distinct block of AG-UI events:
+The Bedrock agent (Claude Sonnet) is configured with `ChatOptions.Reasoning = new ReasoningOptions { Effort = ReasoningEffort.ExtraHigh, Output = ReasoningOutput.Full }` in [`backend/Program.cs`](backend/Program.cs). The `AWSSDK.Extensions.Bedrock.MEAI` adapter maps this to `AdditionalModelRequestFields["thinking"] = { type: "enabled", budget_tokens: N }`, deriving the budget from `MaxTokens` (`Low`/`Medium`/`High`/`ExtraHigh` ⇒ 25 %/50 %/75 %/100 % of `MaxTokens`). The model then streams its chain-of-thought as `TextReasoningContent`, which the `Microsoft.Agents.AI.AGUI` extension emits as a distinct block of AG-UI events:
 
 ```text
 REASONING_START → REASONING_MESSAGE_START (role:"reasoning") → REASONING_MESSAGE_CONTENT* → [REASONING_ENCRYPTED_VALUE] → REASONING_MESSAGE_END → REASONING_END
 ```
 
 followed by the usual `TEXT_MESSAGE_*` answer. `gpt-4o` is not a reasoning model, so the OpenAI agent is left without `ReasoningOptions` (sending `reasoning_effort` to it would be a 400).
+
+**Gotcha — `ExtraHigh` needs an explicit `MaxTokens`.** When `MaxTokens` is unset the adapter picks a fixed budget (`ExtraHigh` ⇒ 32768) and auto-raises `MaxTokens` to `budget × 4` = **131072**, which exceeds Claude's 128000 output limit and is rejected with _"The maximum tokens you requested exceeds the model limit of 128000"_. The agent therefore pins `MaxOutputTokens = 128000` (`maxOutputTokens:` on `CreateAgent`); the budget is a ceiling, not a reservation, so the answer still gets whatever thinking doesn't consume. (`Low`/`Medium`/`High` stay ≤ 128000 even without the cap.)
 
 The frontend ([`chat.component.ts`](frontend/src/app/chat.component.ts)) subscribes to the `onReasoning*` handlers of `@ag-ui/client` and renders the thought as a collapsible 🧠 "thought process" disclosure — created lazily on the first content delta (so a repeated start or a fully-redacted/empty block never leaves a stray bubble), streamed live, then auto-collapsed on completion.
 

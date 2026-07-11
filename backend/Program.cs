@@ -25,7 +25,15 @@ builder.Services.AddKeyedSingleton("amazonbedrock", (sp, key) => CreateAgent(
     chatClient: AmazonBedrock(builder.Configuration, sp),
     tools: sp.GetRequiredService<Lazy<Task<AIFunction[]>>>().Value.GetAwaiter().GetResult(),
     services: sp,
-    reasoning: new ReasoningOptions { Effort = ReasoningEffort.Medium, Output = ReasoningOutput.Full }));
+    // Claude Sonnet on Bedrock supports extended thinking. The AWS MEAI adapter maps this to
+    // AdditionalModelRequestFields["thinking"] and the AGUI extension streams the resulting
+    // TextReasoningContent as REASONING_* events. (gpt-4o has no reasoning, so OpenAI is left unset.)
+    reasoning: new ReasoningOptions { Effort = ReasoningEffort.ExtraHigh, Output = ReasoningOutput.Full },
+    // An explicit output cap is REQUIRED for ExtraHigh: the adapter derives the thinking budget from
+    // MaxTokens (ExtraHigh => budget = MaxTokens - 1) and, when MaxTokens is unset, auto-raises it to
+    // budget*4 = 131072 — which exceeds Claude's 128000 output limit and is rejected. Pinning it to
+    // the model limit keeps the request valid; the budget is a ceiling, so short answers still fit.
+    maxOutputTokens: 128_000));
 
 builder.Services.AddKeyedSingleton("agentAliases", builder.Services
     .Where(sd => sd.IsKeyedService && sd.ServiceType == typeof(AIAgent))
@@ -189,7 +197,7 @@ static IChatClient AmazonBedrock(IConfiguration configuration, IServiceProvider 
         ;
 }
 
-static AIAgent CreateAgent(IChatClient chatClient, AIFunction[] tools, IServiceProvider services, IChatClient? classifier = null, ReasoningOptions? reasoning = null)
+static AIAgent CreateAgent(IChatClient chatClient, AIFunction[] tools, IServiceProvider services, IChatClient? classifier = null, ReasoningOptions? reasoning = null, int? maxOutputTokens = null)
 {
     var applicationName = services.GetRequiredService<IHostEnvironment>().ApplicationName;
     var fileStore = services.GetRequiredService<IUploadedFileStore>();
@@ -202,6 +210,7 @@ static AIAgent CreateAgent(IChatClient chatClient, AIFunction[] tools, IServiceP
                 {
                     Tools = tools,
                     Reasoning = reasoning,
+                    MaxOutputTokens = maxOutputTokens,
                 },
                 ChatHistoryProvider = new FileSystemChatHistoryProvider(), // DevUI uses InMemoryResponsesService, which stores/loads directly with IConversationStorage.
                 AIContextProviders = [],
