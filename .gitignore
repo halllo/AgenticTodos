@@ -420,3 +420,4 @@ FodyWeavers.xsd
 
 /AgentSessions
 /ChatHistories
+.playwright-cli
