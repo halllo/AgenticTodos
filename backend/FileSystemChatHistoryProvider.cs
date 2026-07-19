@@ -71,6 +71,10 @@ public abstract class IOChatHistoryProvider : ChatHistoryProvider
         // so extended-thinking (Claude on Bedrock) history replays without a provider validation error.
         RedactedReasoningNormalizer.Normalize(history);
 
+        // Scrub completed tool-approval pairs and auto-reject orphaned requests, so the
+        // function-invocation layer can replay the history (see ToolApprovalHistoryNormalizer).
+        ToolApprovalHistoryNormalizer.Normalize(history, context.RequestMessages);
+
         return history;
     }
 

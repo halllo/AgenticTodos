@@ -1,3 +1,5 @@
+#pragma warning disable MEAI001, MAAI001 // Tool approval types are experimental
+
 using AgenticTodos.Backend;
 using Amazon.BedrockRuntime;
 using EUAIActClassifier;
@@ -214,10 +216,21 @@ static AIAgent CreateAgent(IChatClient chatClient, AIFunction[] tools, IServiceP
                 },
                 ChatHistoryProvider = new FileSystemChatHistoryProvider(), // DevUI uses InMemoryResponsesService, which stores/loads directly with IConversationStorage.
                 AIContextProviders = [],
+                // Approval escalation is all-or-nothing: when any tool call in a model response
+                // requires approval, FunctionInvokingChatClient converts ALL calls in that response
+                // to approval requests — including client-side (WebMCP) tools. This flag injects a
+                // decorator that auto-approves the non-gated ones via the session state, so only
+                // genuinely gated tools prompt the user.
+                EnableNonApprovalRequiredFunctionBypassing = true,
             },
             services: services)
         .AsBuilder()
         .UseOpenTelemetry(sourceName: applicationName, configure: c => c.EnableSensitiveData = true)
+        // Order matters: the bridge (outer) translates approval content to/from the AG-UI wire
+        // format; ToolApprovalAgent (inner) applies "always allow" rules and queues multi-approval
+        // batches, persisting ToolApprovalState in the session.
+        .UseToolApprovalBridge()
+        .UseToolApproval(new ToolApprovalAgentOptions())
         .Use(sharedFunc: (messages, session, options, next, ct) =>
             AttachmentResolutionMiddleware.Invoke(messages, session, options, next, ct, fileStore))
         .Use(sharedFunc: OmitEmptySystemMessagesMiddleware.Invoke)
@@ -240,10 +253,18 @@ static async Task<AIFunction[]> GetTools(IConfiguration configuration)
     }));
     var mcpTools = await mcpClient.ListToolsAsync();
 
-    return [
-        .. mcpTools,
+    // Tools listed under HumanInTheLoop:ApprovalRequiredTools pause for user approval before
+    // executing (see human-in-the-loop.md). Works for local functions and MCP tools alike.
+    var approvalRequired = configuration.GetSection("HumanInTheLoop:ApprovalRequiredTools").Get<string[]>() ?? [];
+    AIFunction Gate(AIFunction function) =>
+        approvalRequired.Contains(function.Name, StringComparer.OrdinalIgnoreCase)
+            ? new ApprovalRequiredAIFunction(function)
+            : function;
 
-        AIFunctionFactory.Create(
+    return [
+        .. mcpTools.Select(Gate),
+
+        Gate(AIFunctionFactory.Create(
             name: "increment_counter",
             description: "Increment the counter.",
             method: (IServiceProvider services) =>
@@ -261,6 +282,6 @@ static async Task<AIFunction[]> GetTools(IConfiguration configuration)
 
                 return state?.Counter;
             }
-        )
+        ))
     ];
 }

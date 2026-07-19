@@ -9,7 +9,7 @@
 //
 // Environment variables:
 //   AG_UI_ENDPOINT  - Full URL of the AG-UI endpoint to test
-//                     (default: http://localhost:5288/agents/static/openai/agui)
+//                     (default: http://localhost:5288/agents/routed/openai/agui)
 
 using System.Net.Http;
 using System.Text;
@@ -25,7 +25,7 @@ public sealed class ActivitySnapshotConformanceTests
 
     private static readonly string s_endpoint =
         Environment.GetEnvironmentVariable("AG_UI_ENDPOINT")
-        ?? "http://localhost:5288/agents/static/openai/agui";
+        ?? "http://localhost:5288/agents/routed/openai/agui";
 
     private static readonly TimeSpan s_testTimeout = TimeSpan.FromSeconds(60);
     private static readonly TimeSpan s_operationTimeout = TimeSpan.FromSeconds(20);
@@ -332,11 +332,57 @@ public sealed class ActivitySnapshotConformanceTests
 
     // Separate lazy request for the increment-counter scenario; shared across tests in this group.
     private static readonly Lazy<Task<List<JsonElement>>> s_incrementEvents =
-        new(() => SendAgUiRequestAsync(BuildIncrementBody(), CancellationToken.None));
+        new(() => CollectIncrementEventsWithApprovalAsync(CancellationToken.None));
 
-    private static object BuildIncrementBody() => new
+    // increment_counter is approval-gated (HumanInTheLoop:ApprovalRequiredTools, see
+    // human-in-the-loop.md): the first run pauses with a synthetic request_approval tool call.
+    // Approve it and resume on the same thread, returning the events of both runs combined.
+    private static async Task<List<JsonElement>> CollectIncrementEventsWithApprovalAsync(
+        CancellationToken cancellationToken)
     {
-        threadId = Guid.NewGuid().ToString(),
+        var threadId = Guid.NewGuid().ToString();
+        var events = await SendAgUiRequestAsync(BuildIncrementBody(threadId), cancellationToken);
+
+        var approvalStart = events.FirstOrDefault(e =>
+            GetEventType(e) == "TOOL_CALL_START" &&
+            e.TryGetProperty("toolCallName", out var name) &&
+            name.GetString() == "request_approval");
+        if (approvalStart.ValueKind != JsonValueKind.Object)
+            return events; // no approval requested — return the single run as-is
+
+        var callId = approvalStart.GetProperty("toolCallId").GetString()!;
+        var argsJson = string.Concat(events
+            .Where(e => GetEventType(e) == "TOOL_CALL_ARGS" && e.GetProperty("toolCallId").GetString() == callId)
+            .Select(e => e.GetProperty("delta").GetString()));
+
+        // Echo the request payload back with the decision appended (the wire contract).
+        var response = new Dictionary<string, object?>();
+        using (var payload = JsonDocument.Parse(argsJson))
+        {
+            foreach (var property in payload.RootElement.EnumerateObject())
+                response[property.Name] = property.Value.Clone();
+        }
+        response["approved"] = true;
+        response["reason"] = null;
+        response["always_approve"] = null;
+
+        var resumeBody = new
+        {
+            threadId,
+            runId = Guid.NewGuid().ToString(),
+            messages = new object[] { new { id = callId, role = "tool", content = JsonSerializer.Serialize(response), toolCallId = callId } },
+            tools = Array.Empty<object>(),
+            context = Array.Empty<object>(),
+            state = new { conversation = new { selectedResources = Array.Empty<string>(), counter = 0 } },
+            forwardedProps = new { }
+        };
+        events.AddRange(await SendAgUiRequestAsync(resumeBody, cancellationToken));
+        return events;
+    }
+
+    private static object BuildIncrementBody(string threadId) => new
+    {
+        threadId,
         runId = Guid.NewGuid().ToString(),
         messages = new[] { new { id = Guid.NewGuid().ToString(), role = "user", content = "Please increment the counter." } },
         tools = Array.Empty<object>(),

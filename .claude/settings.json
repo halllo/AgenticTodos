@@ -31,7 +31,8 @@
       "Bash(dotnet-script check_attr.csx)",
       "Bash(gh pr *)",
       "Bash(gh api *)",
-      "Bash(xargs ls)"
+      "Bash(xargs ls)",
+      "Bash(ilspycmd *)"
     ],
     "additionalDirectories": [
       "/Users/manuel.naujoks/Projects/aws-dotnet-aspire",

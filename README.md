@@ -167,6 +167,14 @@ The frontend ([`chat.component.ts`](frontend/src/app/chat.component.ts)) subscri
 
 **Gotcha — redacted-thinking persistence.** The AWS adapter stores a `redacted_thinking` payload as a `byte[]` under `AIContent.AdditionalProperties["RedactedContent"]` and only rebuilds the outbound block when that slot is still a `byte[]`. Persisting history as JSON ([`FileSystemChatHistoryProvider`](backend/FileSystemChatHistoryProvider.cs)) degrades the `byte[]` to a base64 `JsonElement`, which would break every subsequent turn of the conversation. [`RedactedReasoningNormalizer`](backend/RedactedReasoningNormalizer.cs) restores it on load (normal thinking is unaffected — its signature lives in the plain-string `ProtectedData`). Covered by [`RedactedReasoningNormalizerTests`](tests/RedactedReasoningNormalizerTests.cs).
 
+### ✅ Human-in-the-loop tool approval
+
+Tools listed in `HumanInTheLoop:ApprovalRequiredTools` ([`backend/appsettings.json`](backend/appsettings.json)) pause the agent for user approval before executing — the frontend shows an Approve / Always allow / Reject card, the CLI prompts `(y)es / (a)lways allow / (n)o`. "Always allow" records a per-conversation rule (`Microsoft.Agents.AI.ToolApprovalAgent` state in the session), so that tool never prompts again in the same thread.
+
+The AG-UI preview packages drop `ToolApprovalRequestContent` from the SSE stream, so [`ToolApprovalBridgeMiddleware`](backend/ToolApprovalBridgeMiddleware.cs) translates approval content into a synthetic `request_approval` client tool call and back. Full write-up: [human-in-the-loop.md](human-in-the-loop.md).
+
+**Gotcha — approval replay with append-only history.** When an approval is resolved, `FunctionInvokingChatClient` repairs the conversation in memory only (recreates the call/result pair and flips `InformationalOnly` on the approval contents). The append-only [`FileSystemChatHistoryProvider`](backend/FileSystemChatHistoryProvider.cs) never re-writes the already-persisted request, so the next load would throw _"ToolApprovalRequestContent found ... no matching ToolApprovalResponseContent"_. [`ToolApprovalHistoryNormalizer`](backend/ToolApprovalHistoryNormalizer.cs) repairs on load instead: it scrubs completed request/response pairs (which would otherwise map to empty messages Bedrock rejects) and auto-rejects orphaned requests the client never answered. Covered by [`ToolApprovalHistoryNormalizerTests`](tests/ToolApprovalHistoryNormalizerTests.cs). Details: [human-in-the-loop.md](human-in-the-loop.md#history-replay-why-the-normalizer-is-needed).
+
 ### ✅ AGUI routing agent intercepts `/agents/mcp-relay`
 
 `app.MapAGUIViaHttpRoutingAgent()` registers middleware that handles all `/agents/*` paths. If the MCP relay (`app.Map("/agents/mcp-relay", ...)`) is placed after it, the routing agent intercepts requests first and returns 405 for HTTP methods it doesn't support (GET, which the MCP Streamable HTTP transport uses for SSE).

@@ -125,70 +125,101 @@ namespace AgenticTodos.Cli.Verbs
 
                     messages.Add(new(ChatRole.User, message));
 
-                    var runOptions = new ChatClientAgentRunOptions();
-                    bool isFirstUpdate = true;
-                    string? threadId = null;
-                    var updates = new List<ChatResponseUpdate>();
-                    await foreach (AgentResponseUpdate update in agent.RunStreamingAsync(messages, thread, runOptions, cancellationToken: cancellationToken))
+                    // Human-in-the-loop: the backend surfaces approval-gated tools as synthetic
+                    // "request_approval" client tool calls (see human-in-the-loop.md). Collect them,
+                    // prompt the user, answer each with a tool result and re-run until none remain.
+                    var pendingApprovals = new List<(string CallId, IDictionary<string, object?>? Arguments)>();
+                    do
                     {
-                        // Use AsChatResponseUpdate to access ChatResponseUpdate properties
-                        ChatResponseUpdate chatUpdate = update.AsChatResponseUpdate();
-                        updates.Add(chatUpdate);
+                        pendingApprovals.Clear();
 
-                        if (chatUpdate.ConversationId != null)
+                        var runOptions = new ChatClientAgentRunOptions();
+                        bool isFirstUpdate = true;
+                        string? threadId = null;
+                        var updates = new List<ChatResponseUpdate>();
+                        await foreach (AgentResponseUpdate update in agent.RunStreamingAsync(messages, thread, runOptions, cancellationToken: cancellationToken))
                         {
-                            threadId = chatUpdate.ConversationId;
-                        }
+                            // Use AsChatResponseUpdate to access ChatResponseUpdate properties
+                            ChatResponseUpdate chatUpdate = update.AsChatResponseUpdate();
+                            updates.Add(chatUpdate);
 
-                        // Display run started information from the first update
-                        if (isFirstUpdate && threadId != null && chatUpdate.ResponseId != null)
-                        {
-                            AnsiConsole.MarkupLine($"\n[dim]{Markup.Escape($"[Run Started - Thread: {threadId}, Run: {chatUpdate.ResponseId}]")}[/]");
-                            isFirstUpdate = false;
-                        }
-
-                        // Display different content types with appropriate formatting
-                        foreach (AIContent content in chatUpdate.Contents)
-                        {
-                            switch (content)
+                            if (chatUpdate.ConversationId != null)
                             {
-                                case TextContent textContent:
-                                    AnsiConsole.Markup($"[cyan]{Markup.Escape(textContent.Text)}[/]");
-                                    break;
+                                threadId = chatUpdate.ConversationId;
+                            }
 
-                                case FunctionCallContent functionCallContent:
-                                    AnsiConsole.MarkupLine($"\n[green]{Markup.Escape($"[Function Call - Name: {functionCallContent.Name}, Arguments: {JsonSerializer.Serialize(functionCallContent.Arguments)}]")}[/]");
-                                    break;
+                            // Display run started information from the first update
+                            if (isFirstUpdate && threadId != null && chatUpdate.ResponseId != null)
+                            {
+                                AnsiConsole.MarkupLine($"\n[dim]{Markup.Escape($"[Run Started - Thread: {threadId}, Run: {chatUpdate.ResponseId}]")}[/]");
+                                isFirstUpdate = false;
+                            }
 
-                                case FunctionResultContent functionResultContent:
-                                    if (functionResultContent.Exception != null)
-                                    {
-                                        AnsiConsole.MarkupLine($"\n[magenta]{Markup.Escape($"[Function Result - Exception: {functionResultContent.Exception}]")}[/]");
-                                    }
-                                    else
-                                    {
-                                        AnsiConsole.MarkupLine($"\n[magenta]{Markup.Escape($"[Function Result - Result: {functionResultContent.Result}]")}[/]");
-                                    }
-                                    break;
+                            // Display different content types with appropriate formatting
+                            foreach (AIContent content in chatUpdate.Contents)
+                            {
+                                switch (content)
+                                {
+                                    case TextContent textContent:
+                                        AnsiConsole.Markup($"[cyan]{Markup.Escape(textContent.Text)}[/]");
+                                        break;
 
-                                case ErrorContent errorContent:
-                                    string code = errorContent.AdditionalProperties?["Code"] as string ?? "Unknown";
-                                    AnsiConsole.MarkupLine($"\n[red]{Markup.Escape($"[Error - Code: {code}, Message: {errorContent.Message}]")}[/]");
-                                    break;
+                                    case FunctionCallContent { Name: "request_approval" } approvalCall:
+                                        pendingApprovals.Add((approvalCall.CallId, approvalCall.Arguments));
+                                        break;
+
+                                    case FunctionCallContent functionCallContent:
+                                        AnsiConsole.MarkupLine($"\n[green]{Markup.Escape($"[Function Call - Name: {functionCallContent.Name}, Arguments: {JsonSerializer.Serialize(functionCallContent.Arguments)}]")}[/]");
+                                        break;
+
+                                    case FunctionResultContent functionResultContent:
+                                        if (functionResultContent.Exception != null)
+                                        {
+                                            AnsiConsole.MarkupLine($"\n[magenta]{Markup.Escape($"[Function Result - Exception: {functionResultContent.Exception}]")}[/]");
+                                        }
+                                        else
+                                        {
+                                            AnsiConsole.MarkupLine($"\n[magenta]{Markup.Escape($"[Function Result - Result: {functionResultContent.Result}]")}[/]");
+                                        }
+                                        break;
+
+                                    case ErrorContent errorContent:
+                                        string code = errorContent.AdditionalProperties?["Code"] as string ?? "Unknown";
+                                        AnsiConsole.MarkupLine($"\n[red]{Markup.Escape($"[Error - Code: {code}, Message: {errorContent.Message}]")}[/]");
+                                        break;
+                                }
                             }
                         }
-                    }
 
-                    if (updates.Count > 0 && !updates[^1].Contents.Any(c => c is TextContent))
-                    {
-                        var lastUpdate = updates[^1];
-                        AnsiConsole.MarkupLine($"\n[dim]{Markup.Escape($"[Run Ended - Thread: {threadId}, Run: {lastUpdate.ResponseId}]")}[/]");
-                    }
+                        if (updates.Count > 0 && !updates[^1].Contents.Any(c => c is TextContent))
+                        {
+                            var lastUpdate = updates[^1];
+                            AnsiConsole.MarkupLine($"\n[dim]{Markup.Escape($"[Run Ended - Thread: {threadId}, Run: {lastUpdate.ResponseId}]")}[/]");
+                        }
 
-                    // Remember messages for the next turn
-                    var chatResponse = updates.ToChatResponse();
-                    //messages.AddRange(chatResponse.Messages);
-                    messages.Clear(); // server now supports session management
+                        messages.Clear(); // server supports session management, only send new messages
+
+                        foreach (var (callId, arguments) in pendingApprovals)
+                        {
+                            var (toolName, toolArgsJson) = DescribeApprovalRequest(arguments);
+                            AnsiConsole.MarkupLine($"\n[yellow]{Markup.Escape($"[Approval required - Tool: {toolName}, Arguments: {toolArgsJson}]")}[/]");
+                            var choice = AnsiConsole.Prompt(
+                                new TextPrompt<string>("Approve? (y)es / (a)lways allow / (n)o:")
+                                    .AddChoices(["y", "a", "n"])
+                                    .DefaultValue("y"));
+
+                            // Echo the request payload back, plus the decision — the backend bridge
+                            // reconstructs the approval from it (and records an "always allow" rule
+                            // for this conversation when requested).
+                            var response = new Dictionary<string, object?>(arguments ?? new Dictionary<string, object?>())
+                            {
+                                ["approved"] = choice is "y" or "a",
+                                ["reason"] = null,
+                                ["always_approve"] = choice == "a" ? "tool" : null,
+                            };
+                            messages.Add(new(ChatRole.Tool, [new FunctionResultContent(callId, JsonSerializer.SerializeToElement(response))]));
+                        }
+                    } while (pendingApprovals.Count > 0);
                 }
             }
             catch (OperationCanceledException)
@@ -200,6 +231,30 @@ namespace AgenticTodos.Cli.Verbs
                 logger.LogError(ex, "An error occurred while running the AGUIClient");
                 return;
             }
+        }
+
+        /// <summary>
+        /// Extracts the wrapped tool call's name and arguments from a <c>request_approval</c>
+        /// payload (<c>{ "id": ..., "tool_call": { "id", "name", "arguments" } }</c>) for display.
+        /// </summary>
+        private static (string ToolName, string ArgumentsJson) DescribeApprovalRequest(IDictionary<string, object?>? arguments)
+        {
+            if (arguments?.TryGetValue("tool_call", out var toolCallObj) == true)
+            {
+                var toolCall = toolCallObj switch
+                {
+                    JsonElement el => el,
+                    not null => JsonSerializer.SerializeToElement(toolCallObj),
+                    _ => default,
+                };
+                if (toolCall.ValueKind == JsonValueKind.Object)
+                {
+                    var name = toolCall.TryGetProperty("name", out var nameEl) ? nameEl.GetString() : null;
+                    var args = toolCall.TryGetProperty("arguments", out var argsEl) ? argsEl.GetRawText() : "{}";
+                    return (name ?? "unknown tool", args);
+                }
+            }
+            return ("unknown tool", "{}");
         }
     }
 }

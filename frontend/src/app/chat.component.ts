@@ -21,8 +21,17 @@ interface RiskClassification {
   reason: string;
 }
 
+type ApprovalDecision = 'approved' | 'always' | 'rejected';
+
+interface ApprovalViewModel {
+  id: string;
+  toolName: string;
+  args: Record<string, unknown>;
+  decision?: ApprovalDecision;
+}
+
 interface MessageViewModel {
-  role: 'user' | 'assistant' | 'tool' | 'activity' | 'risk' | 'reasoning';
+  role: 'user' | 'assistant' | 'tool' | 'activity' | 'risk' | 'reasoning' | 'approval';
   content: string;
   toolName?: string;
   toolCallId?: string;
@@ -35,6 +44,7 @@ interface MessageViewModel {
   toolResult?: unknown;
   attachments?: Attachment[];
   risk?: RiskClassification;
+  approval?: ApprovalViewModel;
   collapsed?: boolean;
   userToggled?: boolean;
 }
@@ -81,6 +91,7 @@ interface MessageViewModel {
             [class.chat__message--reasoning]="message.role === 'reasoning'"
             [class.chat__message--risk]="message.role === 'risk'"
             [class.chat__message--risk-critical]="message.role === 'risk' && message.risk?.risk === 'Unacceptable'"
+            [class.chat__message--approval]="message.role === 'approval'"
             [class.chat__message--error]="message.error"
           >
             <div class="chat__avatar">
@@ -96,6 +107,8 @@ interface MessageViewModel {
                 🧠
               } @else if (message.role === 'risk') {
                 ⚠️
+              } @else if (message.role === 'approval') {
+                ✋
               }
             </div>
             <div class="chat__content" [class.chat__content--generating]="message.isGenerating">
@@ -133,6 +146,27 @@ interface MessageViewModel {
                 }
                 @if (message.risk?.reason) {
                   <div class="chat__riskReason">{{ message.risk.reason }}</div>
+                }
+              } @else if (message.role === 'approval') {
+                <span class="chat__approvalBadge">Approval required</span>
+                @if (message.approval; as approval) {
+                  <div class="chat__approvalTool">{{ approval.toolName }}</div>
+                  <pre class="chat__approvalArgs">{{ approval.args | json }}</pre>
+                  @if (approval.decision; as decision) {
+                    <span class="chat__approvalDecision" [class.chat__approvalDecision--rejected]="decision === 'rejected'">
+                      {{ decision === 'approved' ? 'Approved ✓' : decision === 'always' ? 'Always allowed ∞' : 'Rejected ✕' }}
+                    </span>
+                  } @else {
+                    <div class="chat__approvalActions">
+                      <button type="button" class="chat__approvalBtn chat__approvalBtn--approve"
+                        (click)="onApprovalDecision(message.toolCallId!, 'approved')">✓ Approve</button>
+                      <button type="button" class="chat__approvalBtn chat__approvalBtn--always"
+                        title="Approve and don't ask again for this tool in this conversation"
+                        (click)="onApprovalDecision(message.toolCallId!, 'always')">∞ Always allow</button>
+                      <button type="button" class="chat__approvalBtn chat__approvalBtn--reject"
+                        (click)="onApprovalDecision(message.toolCallId!, 'rejected')">✕ Reject</button>
+                    </div>
+                  }
                 }
               } @else {
                 {{ message.content }}
@@ -186,11 +220,11 @@ interface MessageViewModel {
       <form class="chat__inputRow" (submit)="onSubmit($event)">
         <input #fileInput type="file" multiple hidden (change)="onFilesSelected($event)"/>
         <button type="button" class="chat__attach" [disabled]="isUploading()" (click)="fileInput.click()" aria-label="Attach files" title="Attach files">📎</button>
-        <input type="text" [formField]="newMessageForm.content" placeholder="Type your message..." class="chat__input"/>
+        <input type="text" [formField]="newMessageForm.content" [attr.placeholder]="awaitingApproval() ? 'Respond to the approval request above…' : 'Type your message...'" class="chat__input"/>
         @if (isLoading()) {
           <button type="button" class="chat__send" (click)="cancelRun()">✋ Stop</button>
         } @else {
-          <button type="submit" class="chat__send">Send</button>
+          <button type="submit" class="chat__send" [disabled]="awaitingApproval()">Send</button>
         }
       </form>
     </div>
@@ -706,6 +740,93 @@ interface MessageViewModel {
       margin-top: 0.25rem;
       opacity: 0.9;
     }
+
+    .chat__message.chat__message--approval {
+      .chat__content {
+        width: 100%;
+        background: #e8f0fe;
+        color: #1a3d7c;
+        border: 1px solid #90b4f0;
+        border-radius: 4px 8px 18px 18px;
+        font-size: 0.875rem;
+      }
+      .chat__avatar {
+        background: #e8f0fe;
+        color: #1a3d7c;
+      }
+    }
+
+    .chat__approvalBadge {
+      display: inline-block;
+      font-weight: 700;
+      font-size: 0.8rem;
+      letter-spacing: 0.02em;
+      text-transform: uppercase;
+    }
+
+    .chat__approvalTool {
+      margin-top: 0.35rem;
+      font-weight: 600;
+      font-family: monospace;
+    }
+
+    .chat__approvalArgs {
+      margin: 0.35rem 0 0;
+      padding: 0.5rem;
+      background: rgba(255, 255, 255, 0.6);
+      border-radius: 8px;
+      font-size: 0.8rem;
+      overflow-x: auto;
+    }
+
+    .chat__approvalActions {
+      display: flex;
+      gap: 0.5rem;
+      margin-top: 0.6rem;
+    }
+
+    .chat__approvalBtn {
+      padding: 0.4rem 0.9rem;
+      border-radius: 8px;
+      border: 1px solid transparent;
+      font-size: 0.85rem;
+      font-weight: 600;
+      cursor: pointer;
+      transition: filter 0.15s;
+
+      &:hover {
+        filter: brightness(0.95);
+      }
+
+      &.chat__approvalBtn--approve {
+        background: #d7f3dc;
+        color: #1b5e20;
+        border-color: #81c784;
+      }
+
+      &.chat__approvalBtn--always {
+        background: #e8f0fe;
+        color: #1a3d7c;
+        border-color: #90b4f0;
+      }
+
+      &.chat__approvalBtn--reject {
+        background: #ffebee;
+        color: #b71c1c;
+        border-color: #ef9a9a;
+      }
+    }
+
+    .chat__approvalDecision {
+      display: inline-block;
+      margin-top: 0.6rem;
+      font-weight: 700;
+      color: #1b5e20;
+
+      &.chat__approvalDecision--rejected {
+        color: #b71c1c;
+      }
+    }
   `,
 })
 export class ChatComponent {
@@ -757,9 +878,18 @@ export class ChatComponent {
   });
 
   private pendingFrontendToolCalls: Array<{ id: string, name: string, args: string }> = [];
+  // Approval requests surfaced by the backend as synthetic `request_approval` tool calls
+  // (see human-in-the-loop.md). Unlike frontend tools they are not auto-executed on run
+  // finish — the run pauses until the user decides on every pending request.
+  private pendingApprovalCalls: Array<{ id: string, args: string, decision?: ApprovalDecision }> = [];
+  protected readonly awaitingApproval = signal(false);
 
   private agent?: HttpAgent;
   private initializeAgent(agentAlias: string): void {
+    // Switching agents discards any in-flight approval state; the backend keeps pending
+    // approvals in its per-conversation session queue and re-presents them when asked again.
+    this.pendingApprovalCalls = [];
+    this.awaitingApproval.set(false);
     const agent = new HttpAgent({
       url: `/agents/routed/${agentAlias}/agui`,
       initialState: untracked(this.conversationState)
@@ -812,6 +942,16 @@ export class ChatComponent {
         console.log('Reasoning ended:', event);
       },
       onToolCallStartEvent: ({ event }) => {
+        // Approval request: render a card instead of a tool bubble; do not auto-execute.
+        if (event.toolCallName === 'request_approval') {
+          this.messages.update(msgs => [
+            ...msgs,
+            { role: 'approval', content: '', toolCallId: event.toolCallId }
+          ]);
+          this.pendingApprovalCalls.push({ id: event.toolCallId, args: '' });
+          this.status.set('Waiting for your approval…');
+          return;
+        }
         // Add a tool message to the chat for any tool call (local or backend)
         this.messages.update(msgs => [
           ...msgs,
@@ -829,17 +969,41 @@ export class ChatComponent {
         }
       },
       onToolCallArgsEvent: ({ event }) => {
-        // Find the matching pending frontend tool call and append args
-        const call = this.pendingFrontendToolCalls.find(tc => tc.id === event.toolCallId);
+        // Find the matching pending frontend tool or approval call and append args
+        const call = this.pendingFrontendToolCalls.find(tc => tc.id === event.toolCallId)
+          ?? this.pendingApprovalCalls.find(tc => tc.id === event.toolCallId);
         if (call) {
           call.args += event.delta || '';
         }
       },
       onToolCallEndEvent: async ({ toolCallName, toolCallArgs, event }) => {
         console.log('Tool call', toolCallName, toolCallArgs, event);
+        // Approval request complete: parse the payload and populate the card.
+        const approvalCall = this.pendingApprovalCalls.find(tc => tc.id === event.toolCallId);
+        if (approvalCall) {
+          let parsed: any = {};
+          try {
+            parsed = approvalCall.args ? JSON.parse(approvalCall.args) : {};
+          } catch {
+            parsed = {};
+          }
+          this.messages.update(msgs => msgs.map(msg =>
+            msg.role === 'approval' && msg.toolCallId === approvalCall.id
+              ? {
+                  ...msg,
+                  approval: {
+                    id: parsed.id ?? approvalCall.id,
+                    toolName: parsed.tool_call?.name ?? 'unknown tool',
+                    args: parsed.tool_call?.arguments ?? {},
+                  }
+                }
+              : msg
+          ));
+          return;
+        }
         this.messages.update(msgs => {
           return msgs.map(msg =>
-            msg.toolCallId === event.toolCallId
+            msg.role === 'tool' && msg.toolCallId === event.toolCallId
               ? { ...msg, toolName: `${msg.toolName}(${toolCallArgs ? JSON.stringify(toolCallArgs) : ''})` }
               : msg
           );
@@ -854,6 +1018,10 @@ export class ChatComponent {
       },
       onRunErrorEvent: ({ event }) => {
         this.isLoading.set(false);
+        // A failed/cancelled run invalidates any approval requests it surfaced — the backend
+        // re-presents pending approvals from its session queue on the next run.
+        this.pendingApprovalCalls = [];
+        this.awaitingApproval.set(false);
         if (this.isAbortError(event.rawEvent)) {
           console.log('Run cancelled', event);
           this.status.set('Cancelled');
@@ -963,6 +1131,12 @@ export class ChatComponent {
           this.agent?.setMessages([]); // server supports session management, no need to resend history
           this.agent?.addMessages(toolMessages);
           await this.runAgent();
+        } else if (this.pendingApprovalCalls.length > 0) {
+          // Approval pending: do NOT auto-run — the run resumes in onApprovalDecision once
+          // the user has decided on every pending request.
+          this.agent?.setMessages([]); // server supports session management, no need to resend history
+          this.awaitingApproval.set(true);
+          this.status.set('Awaiting your approval');
         } else {
           this.agent?.setMessages([]); // server supports session management, no need to resend history
           this.status.set('Ready to chat');
@@ -973,12 +1147,65 @@ export class ChatComponent {
     this.agent = agent;
   }
 
+  /**
+   * Records the user's decision on an approval card. Once every pending approval of the run
+   * has a decision, sends one tool-result message per request (echoing the request payload,
+   * plus `approved` and the optional `always_approve` rule scope) and resumes the run — the
+   * same mechanism the WebMCP frontend-tool round-trip uses.
+   */
+  protected async onApprovalDecision(toolCallId: string, decision: ApprovalDecision): Promise<void> {
+    const call = this.pendingApprovalCalls.find(tc => tc.id === toolCallId);
+    if (!call || call.decision) {
+      return;
+    }
+    call.decision = decision;
+    this.messages.update(msgs => msgs.map(msg =>
+      msg.role === 'approval' && msg.toolCallId === toolCallId && msg.approval
+        ? { ...msg, approval: { ...msg.approval, decision } }
+        : msg
+    ));
+
+    // The backend surfaces approvals one at a time, but handle multiple cards defensively:
+    // the resumed run must answer every pending request.
+    if (this.pendingApprovalCalls.some(tc => !tc.decision)) {
+      return;
+    }
+
+    const toolMessages: Message[] = this.pendingApprovalCalls.map(tc => {
+      let request: Record<string, unknown> = {};
+      try {
+        request = tc.args ? JSON.parse(tc.args) : {};
+      } catch {
+        request = {};
+      }
+      const response = {
+        ...request, // echoes id + tool_call verbatim so the backend can reconstruct the approval
+        approved: tc.decision !== 'rejected',
+        reason: null,
+        always_approve: tc.decision === 'always' ? 'tool' : null,
+      };
+      return {
+        id: tc.id,
+        role: 'tool',
+        content: JSON.stringify(response),
+        toolCallId: tc.id,
+      };
+    });
+    this.pendingApprovalCalls = [];
+    this.awaitingApproval.set(false);
+    this.agent?.setMessages([]); // server supports session management, no need to resend history
+    this.agent?.addMessages(toolMessages);
+    await this.runAgent();
+  }
+
   protected async onSubmit(event: Event): Promise<void> {
     event.preventDefault();
 
     const newMessage = this.newMessageViewModel().content.trim();
     const attachments = this.pendingAttachments();
-    if ((!newMessage && attachments.length === 0) || this.isLoading()) {
+    // While an approval is pending the run is paused mid-tool-call; a fresh user message
+    // would leave the approval unanswered, so submission is blocked until the user decides.
+    if ((!newMessage && attachments.length === 0) || this.isLoading() || this.awaitingApproval()) {
       return;
     }
 

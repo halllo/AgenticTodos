@@ -4,6 +4,8 @@
         "npm run build": true,
         "dotnet build": true,
         "dotnet test": true,
-        "ForEach-Object": true
+        "ForEach-Object": true,
+        "aspire": true,
+        "printf": true
     }
 }

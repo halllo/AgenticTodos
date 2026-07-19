@@ -57,7 +57,12 @@ internal static class DetectMcpAppsActivityMiddleware
                 if (!callIdToInfo.Remove(frc.CallId, out var info)) continue;
                 var runContext = AIAgent.CurrentRunContext;
                 var chatOptions = runContext?.Agent?.GetService<ChatClientAgentOptions>();
-                var resourceUri = chatOptions?.ChatOptions?.Tools?.OfType<McpClientTool>()
+                // GetService-based lookup instead of OfType: an approval-gated MCP tool is wrapped
+                // in ApprovalRequiredAIFunction (a DelegatingAIFunction), which forwards GetService
+                // to the inner McpClientTool.
+                var resourceUri = chatOptions?.ChatOptions?.Tools?
+                    .Select(t => t.GetService<McpClientTool>())
+                    .OfType<McpClientTool>()
                     .FirstOrDefault(t => string.Equals(t.Name, info.ToolName, StringComparison.OrdinalIgnoreCase))
                     ?.ProtocolTool.Meta?["ui"]?["resourceUri"]?.GetValue<string>();
                 if (resourceUri is null) continue;
