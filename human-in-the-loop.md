@@ -19,7 +19,7 @@ Note: the Microsoft docs still use the pre-10.4 type names (`FunctionApprovalReq
 | `backend/appsettings.json` | `HumanInTheLoop:ApprovalRequiredTools` — names of gated tools (local functions and MCP tools alike) |
 | `backend/ToolApprovalHistoryNormalizer.cs` | Repairs persisted approval content on history load (scrubs completed pairs, auto-rejects orphaned requests) — required because the history store is append-only, see [History replay](#history-replay-why-the-normalizer-is-needed) |
 | `backend/DetectMcpAppsActivityMiddleware.cs` | Uses `GetService<McpClientTool>()` instead of `OfType` so MCP-apps rendering still works when an MCP tool is wrapped for approval |
-| `frontend/src/app/chat.component.ts` | Approval card (role `'approval'`) with Approve / Always allow / Reject; pauses on run finish, resumes via the same `addMessages` + re-run mechanism as WebMCP tools |
+| `frontend/src/app/chat.component.ts` | Approval card (role `'approval'`) with Approve / Always allow / Reject. WebMCP tool calls and approval requests share one pending-client-call list: on run finish, tool calls execute immediately and hold their results; the run resumes (`addMessages` + re-run) once every pending call is resolved — so a run mixing tool calls and approvals waits for the user's decision before sending everything together |
 | `cli/Verbs/Agent.cs` | Console `(y)es / (a)lways allow / (n)o` prompt, re-runs until no approval requests remain |
 | `tests/ToolApprovalBridgeMiddlewareTests.cs` | Unit tests for both conversion directions and the wire contract |
 | `tests/ToolApprovalHistoryNormalizerTests.cs` | Unit tests for the history repairs (scrubbing, orphan rejection, idempotency) |

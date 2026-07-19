@@ -23,6 +23,14 @@ interface RiskClassification {
 
 type ApprovalDecision = 'approved' | 'always' | 'rejected';
 
+// A client-side call surfaced by a run over the AG-UI tool-call wire format. `tool` entries
+// (WebMCP frontend tools) resolve by executing them once the run finishes; `approval` entries
+// (synthetic `request_approval` calls, see human-in-the-loop.md) resolve by a user decision.
+// The run resumes once every pending call is resolved.
+type PendingClientCall =
+  | { kind: 'tool'; id: string; name: string; args: string; result?: string }
+  | { kind: 'approval'; id: string; args: string; decision?: ApprovalDecision };
+
 interface ApprovalViewModel {
   id: string;
   toolName: string;
@@ -877,18 +885,15 @@ export class ChatComponent {
     }
   });
 
-  private pendingFrontendToolCalls: Array<{ id: string, name: string, args: string }> = [];
-  // Approval requests surfaced by the backend as synthetic `request_approval` tool calls
-  // (see human-in-the-loop.md). Unlike frontend tools they are not auto-executed on run
-  // finish — the run pauses until the user decides on every pending request.
-  private pendingApprovalCalls: Array<{ id: string, args: string, decision?: ApprovalDecision }> = [];
+  private pendingClientCalls: PendingClientCall[] = [];
   protected readonly awaitingApproval = signal(false);
 
   private agent?: HttpAgent;
   private initializeAgent(agentAlias: string): void {
-    // Switching agents discards any in-flight approval state; the backend keeps pending
-    // approvals in its per-conversation session queue and re-presents them when asked again.
-    this.pendingApprovalCalls = [];
+    // Switching agents discards in-flight client calls: the backend re-presents pending
+    // approvals from its per-conversation session queue when asked again, and stale frontend
+    // tool calls must not execute against the new agent's runs.
+    this.pendingClientCalls = [];
     this.awaitingApproval.set(false);
     const agent = new HttpAgent({
       url: `/agents/routed/${agentAlias}/agui`,
@@ -948,7 +953,7 @@ export class ChatComponent {
             ...msgs,
             { role: 'approval', content: '', toolCallId: event.toolCallId }
           ]);
-          this.pendingApprovalCalls.push({ id: event.toolCallId, args: '' });
+          this.pendingClientCalls.push({ kind: 'approval', id: event.toolCallId, args: '' });
           this.status.set('Waiting for your approval…');
           return;
         }
@@ -962,16 +967,15 @@ export class ChatComponent {
             toolCallId: event.toolCallId
           }
         ]);
-        // If it's a frontend tool, collect for batch execution
+        // If it's a frontend tool, collect for execution once the run finishes
         if (this.webmcp.tools().some(t => t.name === event.toolCallName)) {
-          this.pendingFrontendToolCalls.push({ id: event.toolCallId, name: event.toolCallName, args: '' });
+          this.pendingClientCalls.push({ kind: 'tool', id: event.toolCallId, name: event.toolCallName, args: '' });
           this.status.set(`Executing ${event.toolCallName}...`);
         }
       },
       onToolCallArgsEvent: ({ event }) => {
-        // Find the matching pending frontend tool or approval call and append args
-        const call = this.pendingFrontendToolCalls.find(tc => tc.id === event.toolCallId)
-          ?? this.pendingApprovalCalls.find(tc => tc.id === event.toolCallId);
+        // Find the matching pending client call and append args
+        const call = this.pendingClientCalls.find(tc => tc.id === event.toolCallId);
         if (call) {
           call.args += event.delta || '';
         }
@@ -979,8 +983,8 @@ export class ChatComponent {
       onToolCallEndEvent: async ({ toolCallName, toolCallArgs, event }) => {
         console.log('Tool call', toolCallName, toolCallArgs, event);
         // Approval request complete: parse the payload and populate the card.
-        const approvalCall = this.pendingApprovalCalls.find(tc => tc.id === event.toolCallId);
-        if (approvalCall) {
+        const approvalCall = this.pendingClientCalls.find(tc => tc.id === event.toolCallId);
+        if (approvalCall?.kind === 'approval') {
           let parsed: any = {};
           try {
             parsed = approvalCall.args ? JSON.parse(approvalCall.args) : {};
@@ -1018,9 +1022,10 @@ export class ChatComponent {
       },
       onRunErrorEvent: ({ event }) => {
         this.isLoading.set(false);
-        // A failed/cancelled run invalidates any approval requests it surfaced — the backend
-        // re-presents pending approvals from its session queue on the next run.
-        this.pendingApprovalCalls = [];
+        // A failed/cancelled run invalidates the client calls it surfaced: the backend
+        // re-presents pending approvals from its session queue on the next run, and results
+        // for a failed run's tool calls must not be sent to a later one.
+        this.pendingClientCalls = [];
         this.awaitingApproval.set(false);
         if (this.isAbortError(event.rawEvent)) {
           console.log('Run cancelled', event);
@@ -1087,60 +1092,45 @@ export class ChatComponent {
       onRunFinishedEvent: async ({ event }) => {
         console.log('Run finished', event.result, event);
         this.isLoading.set(false);
+        this.agent?.setMessages([]); // server supports session management, no need to resend history
 
-        // Batch execute all pending frontend tool calls
-        if (this.pendingFrontendToolCalls.length > 0) {
-          const toolMessages: Message[] = [];
-          for (const call of this.pendingFrontendToolCalls) {
-            let parsedArgs: Record<string, any> = {};
-            try {
-              const parsed: unknown = call.args ? JSON.parse(call.args) : {};
-              parsedArgs = (parsed && typeof parsed === 'object' && !Array.isArray(parsed))
-                ? (parsed as Record<string, any>)
-                : {};
-            } catch {
-              parsedArgs = {};
-            }
-
-            let result: string = '';
-            try {
-              const invokeToolResponse = await this.webmcp.invokeTool(call.name, parsedArgs);
-              result = typeof invokeToolResponse === 'string'
-                ? invokeToolResponse
-                : JSON.stringify(invokeToolResponse);
-            } catch (error) {
-              result = 'Error: Tool execution failed.';
-            }
-
-            // Update the tool message with the result
-            this.messages.update(msgs => {
-              return msgs.map(msg =>
-                msg.toolCallId === call.id
-                  ? { ...msg, content: result }
-                  : msg
-              );
-            });
-            toolMessages.push({
-              id: call.id,
-              role: "tool",
-              content: result,
-              toolCallId: call.id,
-            });
+        // Execute pending frontend tool calls right away, holding each result on its entry;
+        // approval entries resolve later in onApprovalDecision. maybeResumeRun re-runs once
+        // no call is left unresolved.
+        for (const call of this.pendingClientCalls) {
+          if (call.kind !== 'tool') {
+            continue;
           }
-          this.pendingFrontendToolCalls = [];
-          this.agent?.setMessages([]); // server supports session management, no need to resend history
-          this.agent?.addMessages(toolMessages);
-          await this.runAgent();
-        } else if (this.pendingApprovalCalls.length > 0) {
-          // Approval pending: do NOT auto-run — the run resumes in onApprovalDecision once
-          // the user has decided on every pending request.
-          this.agent?.setMessages([]); // server supports session management, no need to resend history
-          this.awaitingApproval.set(true);
-          this.status.set('Awaiting your approval');
-        } else {
-          this.agent?.setMessages([]); // server supports session management, no need to resend history
-          this.status.set('Ready to chat');
+          let parsedArgs: Record<string, any> = {};
+          try {
+            const parsed: unknown = call.args ? JSON.parse(call.args) : {};
+            parsedArgs = (parsed && typeof parsed === 'object' && !Array.isArray(parsed))
+              ? (parsed as Record<string, any>)
+              : {};
+          } catch {
+            parsedArgs = {};
+          }
+
+          try {
+            const invokeToolResponse = await this.webmcp.invokeTool(call.name, parsedArgs);
+            call.result = typeof invokeToolResponse === 'string'
+              ? invokeToolResponse
+              : JSON.stringify(invokeToolResponse);
+          } catch (error) {
+            call.result = 'Error: Tool execution failed.';
+          }
+
+          // Update the tool message with the result
+          this.messages.update(msgs => {
+            return msgs.map(msg =>
+              msg.toolCallId === call.id
+                ? { ...msg, content: call.result! }
+                : msg
+            );
+          });
         }
+
+        await this.maybeResumeRun();
       }
     });
 
@@ -1148,14 +1138,12 @@ export class ChatComponent {
   }
 
   /**
-   * Records the user's decision on an approval card. Once every pending approval of the run
-   * has a decision, sends one tool-result message per request (echoing the request payload,
-   * plus `approved` and the optional `always_approve` rule scope) and resumes the run — the
-   * same mechanism the WebMCP frontend-tool round-trip uses.
+   * Records the user's decision on an approval card, then resumes the run via
+   * maybeResumeRun once every pending client call is resolved.
    */
   protected async onApprovalDecision(toolCallId: string, decision: ApprovalDecision): Promise<void> {
-    const call = this.pendingApprovalCalls.find(tc => tc.id === toolCallId);
-    if (!call || call.decision) {
+    const call = this.pendingClientCalls.find(tc => tc.id === toolCallId);
+    if (call?.kind !== 'approval' || call.decision) {
       return;
     }
     call.decision = decision;
@@ -1164,38 +1152,60 @@ export class ChatComponent {
         ? { ...msg, approval: { ...msg.approval, decision } }
         : msg
     ));
+    await this.maybeResumeRun();
+  }
 
-    // The backend surfaces approvals one at a time, but handle multiple cards defensively:
-    // the resumed run must answer every pending request.
-    if (this.pendingApprovalCalls.some(tc => !tc.decision)) {
+  /**
+   * Resumes the paused run once every pending client call is resolved — a result for
+   * frontend tools, a decision for approvals — by sending one tool-result message per
+   * call and re-running. Until then (i.e. while approvals await the user, since tool
+   * calls resolve within the run-finished handler) the composer stays locked.
+   */
+  private async maybeResumeRun(): Promise<void> {
+    if (this.pendingClientCalls.length === 0) {
+      this.awaitingApproval.set(false);
+      this.status.set('Ready to chat');
+      return;
+    }
+    const unresolved = this.pendingClientCalls.some(call =>
+      call.kind === 'tool' ? call.result === undefined : !call.decision);
+    if (unresolved) {
+      this.awaitingApproval.set(true);
+      this.status.set('Awaiting your approval');
       return;
     }
 
-    const toolMessages: Message[] = this.pendingApprovalCalls.map(tc => {
-      let request: Record<string, unknown> = {};
-      try {
-        request = tc.args ? JSON.parse(tc.args) : {};
-      } catch {
-        request = {};
-      }
-      const response = {
-        ...request, // echoes id + tool_call verbatim so the backend can reconstruct the approval
-        approved: tc.decision !== 'rejected',
-        reason: null,
-        always_approve: tc.decision === 'always' ? 'tool' : null,
-      };
-      return {
-        id: tc.id,
-        role: 'tool',
-        content: JSON.stringify(response),
-        toolCallId: tc.id,
-      };
-    });
-    this.pendingApprovalCalls = [];
+    const toolMessages: Message[] = this.pendingClientCalls.map(call => ({
+      id: call.id,
+      role: 'tool',
+      content: call.kind === 'tool' ? call.result! : this.buildApprovalResponse(call),
+      toolCallId: call.id,
+    }));
+    this.pendingClientCalls = [];
     this.awaitingApproval.set(false);
     this.agent?.setMessages([]); // server supports session management, no need to resend history
     this.agent?.addMessages(toolMessages);
     await this.runAgent();
+  }
+
+  /**
+   * Builds the `request_approval` tool result: echoes the request payload (id + tool_call)
+   * verbatim so the backend bridge can reconstruct the approval, plus the decision and the
+   * optional `always_approve` rule scope.
+   */
+  private buildApprovalResponse(call: Extract<PendingClientCall, { kind: 'approval' }>): string {
+    let request: Record<string, unknown> = {};
+    try {
+      request = call.args ? JSON.parse(call.args) : {};
+    } catch {
+      request = {};
+    }
+    return JSON.stringify({
+      ...request,
+      approved: call.decision !== 'rejected',
+      reason: null,
+      always_approve: call.decision === 'always' ? 'tool' : null,
+    });
   }
 
   protected async onSubmit(event: Event): Promise<void> {
