@@ -1,7 +1,5 @@
 using Microsoft.Extensions.AI;
 
-#pragma warning disable MEAI001 // Tool approval types are experimental
-
 namespace AgenticTodos.Backend;
 
 /// <summary>
@@ -23,12 +21,17 @@ namespace AgenticTodos.Backend;
 /// <c>"ToolApprovalRequestContent found ... no matching ToolApprovalResponseContent"</c>.
 /// </para>
 /// <para>
-/// Two repairs, both idempotent:
+/// Three repairs, all idempotent:
 /// <list type="number">
 /// <item><b>Scrub completed pairs</b> — approval requests/responses whose tool call already has a
 /// <see cref="FunctionResultContent"/> in history are removed; the recreated call/result pair is the
 /// canonical transcript the model providers need (an approval content would be dropped by their
 /// mappers anyway, leaving empty messages that e.g. Bedrock rejects).</item>
+/// <item><b>Drop re-supplied requests</b> — the AG-UI server SDK rebuilds a complete approval
+/// request/response pair from the client's <c>resume</c> payload, which duplicates the request this
+/// (session-backed) history already holds. FICC indexes approval requests by id and throws
+/// <c>"An item with the same key has already been added"</c> on the duplicate, so the historical copy
+/// gives way to the one arriving with the turn.</item>
 /// <item><b>Reject orphans</b> — a request with no response in history <i>and</i> none arriving in
 /// the current turn's request messages can never be answered (the client lost it, e.g. session file
 /// deleted or thread abandoned); every later turn would throw. A synthetic rejected response is
@@ -36,7 +39,7 @@ namespace AgenticTodos.Backend;
 /// </list>
 /// </para>
 /// </summary>
-public static class ToolApprovalHistoryNormalizer
+internal static class ToolApprovalHistoryNormalizer
 {
     public static void Normalize(List<ChatMessage>? history, IEnumerable<ChatMessage>? requestMessages)
     {
@@ -45,24 +48,32 @@ public static class ToolApprovalHistoryNormalizer
             return;
         }
 
+        var requestMessageList = requestMessages as IReadOnlyCollection<ChatMessage> ?? requestMessages?.ToList() ?? [];
+
         var completedCallIds = history
             .SelectMany(m => m.Contents)
             .OfType<FunctionResultContent>()
             .Select(r => r.CallId)
             .ToHashSet(StringComparer.Ordinal);
 
-        // 1. Scrub approval requests/responses whose tool call already completed.
-        if (completedCallIds.Count > 0)
+        var resuppliedRequestIds = requestMessageList
+            .SelectMany(m => m.Contents)
+            .OfType<ToolApprovalRequestContent>()
+            .Select(r => r.RequestId)
+            .ToHashSet(StringComparer.Ordinal);
+
+        // 1. + 2. Scrub approval content that completed earlier or that this turn re-supplies.
+        if (completedCallIds.Count > 0 || resuppliedRequestIds.Count > 0)
         {
             for (var i = history.Count - 1; i >= 0; i--)
             {
                 var message = history[i];
-                if (!message.Contents.Any(IsCompletedApprovalContent))
+                if (!message.Contents.Any(IsStaleApprovalContent))
                 {
                     continue;
                 }
 
-                var kept = message.Contents.Where(c => !IsCompletedApprovalContent(c)).ToList();
+                var kept = message.Contents.Where(c => !IsStaleApprovalContent(c)).ToList();
                 if (kept.Count == 0)
                 {
                     history.RemoveAt(i);
@@ -76,9 +87,9 @@ public static class ToolApprovalHistoryNormalizer
             }
         }
 
-        // 2. Reject orphaned requests that nothing (neither history nor the current turn) answers.
+        // 3. Reject orphaned requests that nothing (neither history nor the current turn) answers.
         var answeredRequestIds = history
-            .Concat(requestMessages ?? [])
+            .Concat(requestMessageList)
             .SelectMany(m => m.Contents)
             .OfType<ToolApprovalResponseContent>()
             .Select(r => r.RequestId)
@@ -99,10 +110,12 @@ public static class ToolApprovalHistoryNormalizer
 
         return;
 
-        bool IsCompletedApprovalContent(AIContent content) => content switch
+        bool IsStaleApprovalContent(AIContent content) => content switch
         {
-            ToolApprovalRequestContent { ToolCall: { } toolCall } => completedCallIds.Contains(toolCall.CallId),
-            ToolApprovalResponseContent { ToolCall: { } toolCall } => completedCallIds.Contains(toolCall.CallId),
+            ToolApprovalRequestContent { ToolCall: { } toolCall } request =>
+                completedCallIds.Contains(toolCall.CallId) || resuppliedRequestIds.Contains(request.RequestId),
+            ToolApprovalResponseContent { ToolCall: { } toolCall } response =>
+                completedCallIds.Contains(toolCall.CallId) || resuppliedRequestIds.Contains(response.RequestId),
             _ => false,
         };
     }

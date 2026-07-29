@@ -1,15 +1,14 @@
 // AG-UI ACTIVITY_SNAPSHOT Conformance Tests
 //
-// Validates that McpAppsActivityMiddleware + SseEventInjectionMiddleware correctly emit
-// ACTIVITY_SNAPSHOT events for MCP tools that carry a ui.resourceUri in their metadata,
-// and that the mcp-activity STATE_SNAPSHOT marker is suppressed before reaching the client.
+// Validates that DetectMcpAppsActivityMiddleware plus the AGUIStreamOptions mappings emit
+// ACTIVITY_SNAPSHOT events for MCP tools that carry a ui.resourceUri in their metadata, and that
+// the app's own content never leaks onto the wire as a text message.
 //
-// These are integration tests that require a running backend and McpServer.
-// All tests are skipped by default; set env var AG_UI_ENDPOINT (or run them explicitly).
+// These are integration tests: they require a running backend plus McpServer and they make real LLM
+// calls. They are skipped unless AG_UI_ENDPOINT is set (see AgUiEndpointFactAttribute), so a plain
+// `dotnet test` neither depends on a live server nor spends money.
 //
-// Environment variables:
-//   AG_UI_ENDPOINT  - Full URL of the AG-UI endpoint to test
-//                     (default: http://localhost:5288/agents/routed/openai/agui)
+//   AG_UI_ENDPOINT=http://localhost:5288/agents/routed/openai/agui dotnet test
 
 using System.Net.Http;
 using System.Text;
@@ -19,13 +18,9 @@ namespace AgenticTodos.Tests;
 
 public sealed class ActivitySnapshotConformanceTests
 {
-    private const string? Skip = null; // set to a non-empty string to skip
-
     private const string GetTimeResourceUri = "ui://get-time.html";
 
-    private static readonly string s_endpoint =
-        Environment.GetEnvironmentVariable("AG_UI_ENDPOINT")
-        ?? "http://localhost:5288/agents/routed/openai/agui";
+    private static string Endpoint => AgUiEndpointFactAttribute.Endpoint;
 
     private static readonly TimeSpan s_testTimeout = TimeSpan.FromSeconds(60);
     private static readonly TimeSpan s_operationTimeout = TimeSpan.FromSeconds(20);
@@ -41,20 +36,23 @@ public sealed class ActivitySnapshotConformanceTests
     // Helpers
     // ---------------------------------------------------------------------------
 
-    private static CancellationTokenSource CreateLinkedCts(TimeSpan timeout) =>
+    private static CancellationTokenSource CreateTimeoutCts(TimeSpan timeout) =>
         new CancellationTokenSource(timeout);
 
     private static async Task<List<JsonElement>> CollectTimeQueryEventsWithRetryAsync(
         CancellationToken cancellationToken)
     {
+        List<JsonElement> events = [];
         for (int attempt = 0; attempt < 3; attempt++)
         {
-            var events = await SendAgUiRequestAsync(BuildTimeQueryBody(), cancellationToken);
+            events = await SendAgUiRequestAsync(BuildTimeQueryBody(), cancellationToken);
             if (events.Any(e => GetEventType(e) == "ACTIVITY_SNAPSHOT"))
                 return events;
         }
-        // Return the last attempt's events even if no ACTIVITY_SNAPSHOT was found.
-        return await SendAgUiRequestAsync(BuildTimeQueryBody(), cancellationToken);
+
+        // Return the last attempt's events even if no ACTIVITY_SNAPSHOT was found — asking a fourth
+        // time would only add another billed call to a run that is already going to fail.
+        return events;
     }
 
     private static object BuildTimeQueryBody() => new
@@ -71,7 +69,7 @@ public sealed class ActivitySnapshotConformanceTests
     private static async Task<List<JsonElement>> SendAgUiRequestAsync(
         object body, CancellationToken cancellationToken)
     {
-        using var request = new HttpRequestMessage(HttpMethod.Post, s_endpoint)
+        using var request = new HttpRequestMessage(HttpMethod.Post, Endpoint)
         {
             Content = new StringContent(
                 JsonSerializer.Serialize(body), Encoding.UTF8, "application/json")
@@ -125,12 +123,12 @@ public sealed class ActivitySnapshotConformanceTests
     // HTTP layer
     // ---------------------------------------------------------------------------
 
-    [Fact(Skip = Skip)]
-    public async Task HttpResponse_HasContentType_TextEventStream_Async()
+    [AgUiEndpointFact]
+    public async Task HttpResponse_HasContentType_TextEventStream()
     {
-        using var cts = CreateLinkedCts(s_testTimeout);
+        using var cts = CreateTimeoutCts(s_testTimeout);
 
-        using var request = new HttpRequestMessage(HttpMethod.Post, s_endpoint)
+        using var request = new HttpRequestMessage(HttpMethod.Post, Endpoint)
         {
             Content = new StringContent(JsonSerializer.Serialize(BuildTimeQueryBody()), Encoding.UTF8, "application/json")
         };
@@ -148,10 +146,10 @@ public sealed class ActivitySnapshotConformanceTests
     // LLM routing
     // ---------------------------------------------------------------------------
 
-    [Fact(Skip = Skip)]
-    public async Task AskingWhatTimeIsIt_EmitsAtLeastOneToolCallStart_Async()
+    [AgUiEndpointFact]
+    public async Task AskingWhatTimeIsIt_EmitsAtLeastOneToolCallStart()
     {
-        using var cts = CreateLinkedCts(s_testTimeout);
+        using var cts = CreateTimeoutCts(s_testTimeout);
         var events = await s_events.Value.WaitAsync(cts.Token);
 
         Assert.True(
@@ -163,10 +161,10 @@ public sealed class ActivitySnapshotConformanceTests
     // ACTIVITY_SNAPSHOT presence
     // ---------------------------------------------------------------------------
 
-    [Fact(Skip = Skip)]
-    public async Task AskingWhatTimeIsIt_EmitsActivitySnapshot_Async()
+    [AgUiEndpointFact]
+    public async Task AskingWhatTimeIsIt_EmitsActivitySnapshot()
     {
-        using var cts = CreateLinkedCts(s_testTimeout);
+        using var cts = CreateTimeoutCts(s_testTimeout);
         var events = await s_events.Value.WaitAsync(cts.Token);
 
         Assert.True(
@@ -174,10 +172,10 @@ public sealed class ActivitySnapshotConformanceTests
             $"Expected an ACTIVITY_SNAPSHOT event. Full sequence: {EventSequence(events)}");
     }
 
-    [Fact(Skip = Skip)]
-    public async Task ActivitySnapshot_AppearsAfterToolCallResult_Async()
+    [AgUiEndpointFact]
+    public async Task ActivitySnapshot_AppearsAfterToolCallResult()
     {
-        using var cts = CreateLinkedCts(s_testTimeout);
+        using var cts = CreateTimeoutCts(s_testTimeout);
         var events = await s_events.Value.WaitAsync(cts.Token);
 
         int toolResultIdx = events.FindLastIndex(e => GetEventType(e) == "TOOL_CALL_RESULT");
@@ -194,10 +192,10 @@ public sealed class ActivitySnapshotConformanceTests
     // ACTIVITY_SNAPSHOT shape
     // ---------------------------------------------------------------------------
 
-    [Fact(Skip = Skip)]
-    public async Task ActivitySnapshot_ActivityType_IsMcpApps_Async()
+    [AgUiEndpointFact]
+    public async Task ActivitySnapshot_ActivityType_IsMcpApps()
     {
-        using var cts = CreateLinkedCts(s_testTimeout);
+        using var cts = CreateTimeoutCts(s_testTimeout);
         var events = await s_events.Value.WaitAsync(cts.Token);
         var snapshot = FindActivitySnapshot(events);
 
@@ -208,10 +206,10 @@ public sealed class ActivitySnapshotConformanceTests
             $"activityType must be \"mcp-apps\". Got: {snapshot}");
     }
 
-    [Fact(Skip = Skip)]
-    public async Task ActivitySnapshot_Replace_IsTrue_Async()
+    [AgUiEndpointFact]
+    public async Task ActivitySnapshot_Replace_IsTrue()
     {
-        using var cts = CreateLinkedCts(s_testTimeout);
+        using var cts = CreateTimeoutCts(s_testTimeout);
         var events = await s_events.Value.WaitAsync(cts.Token);
         var snapshot = FindActivitySnapshot(events);
 
@@ -222,10 +220,10 @@ public sealed class ActivitySnapshotConformanceTests
             $"replace must be true. Got: {snapshot}");
     }
 
-    [Fact(Skip = Skip)]
-    public async Task ActivitySnapshot_Content_ResourceUri_MatchesGetTime_Async()
+    [AgUiEndpointFact]
+    public async Task ActivitySnapshot_Content_ResourceUri_MatchesGetTime()
     {
-        using var cts = CreateLinkedCts(s_testTimeout);
+        using var cts = CreateTimeoutCts(s_testTimeout);
         var events = await s_events.Value.WaitAsync(cts.Token);
         var snapshot = FindActivitySnapshot(events);
 
@@ -238,10 +236,10 @@ public sealed class ActivitySnapshotConformanceTests
             $"content.resourceUri must be \"{GetTimeResourceUri}\". Got: {snapshot}");
     }
 
-    [Fact(Skip = Skip)]
-    public async Task ActivitySnapshot_Content_Result_IsNormalized_Async()
+    [AgUiEndpointFact]
+    public async Task ActivitySnapshot_Content_Result_IsNormalized()
     {
-        using var cts = CreateLinkedCts(s_testTimeout);
+        using var cts = CreateTimeoutCts(s_testTimeout);
         var events = await s_events.Value.WaitAsync(cts.Token);
         var snapshot = FindActivitySnapshot(events);
 
@@ -262,10 +260,10 @@ public sealed class ActivitySnapshotConformanceTests
     }
 
     // ---------------------------------------------------------------------------
-    [Fact(Skip = Skip)]
-    public async Task ActivitySnapshot_MessageId_IsPresent_Async()
+    [AgUiEndpointFact]
+    public async Task ActivitySnapshot_MessageId_IsPresent()
     {
-        using var cts = CreateLinkedCts(s_testTimeout);
+        using var cts = CreateTimeoutCts(s_testTimeout);
         var events = await s_events.Value.WaitAsync(cts.Token);
         var snapshot = FindActivitySnapshot(events);
 
@@ -278,42 +276,31 @@ public sealed class ActivitySnapshotConformanceTests
     }
 
     // ---------------------------------------------------------------------------
-    // Suppression — mcp-activity TEXT_MESSAGE_CONTENT marker must NOT reach the client
+    // No leaks — the MCP-apps payload must arrive as ACTIVITY_SNAPSHOT, never as chat text
     // ---------------------------------------------------------------------------
 
-    [Fact(Skip = Skip)]
-    public async Task McpActivityMarker_IsSuppressed_NotVisibleToClient_Async()
+    [AgUiEndpointFact]
+    public async Task McpAppPayload_NeverArrivesAsTextMessage()
     {
-        using var cts = CreateLinkedCts(s_testTimeout);
+        using var cts = CreateTimeoutCts(s_testTimeout);
         var events = await s_events.Value.WaitAsync(cts.Token);
 
-        // The mcp-activity marker travels as TEXT_MESSAGE_CONTENT whose delta is a JSON object
-        // with type=="mcp-activity". SseEventInjectionMiddleware must replace it with
-        // ACTIVITY_SNAPSHOT before it reaches the client.
+        // The payload rides on a dedicated content type that the stream mappings turn into an
+        // ACTIVITY_SNAPSHOT; if a mapping goes missing it would either vanish or surface as text.
         var leaked = events.Where(e =>
-        {
-            if (GetEventType(e) != "TEXT_MESSAGE_CONTENT") return false;
-            if (!e.TryGetProperty("delta", out var delta)) return false;
-            var deltaText = delta.GetString();
-            if (deltaText is null) return false;
-            try
-            {
-                using var doc = JsonDocument.Parse(deltaText);
-                return doc.RootElement.ValueKind == JsonValueKind.Object &&
-                       doc.RootElement.TryGetProperty("type", out var t) &&
-                       t.GetString() == "mcp-activity";
-            }
-            catch (JsonException) { return false; }
-        }).ToList();
+            GetEventType(e) == "TEXT_MESSAGE_CONTENT" &&
+            e.TryGetProperty("delta", out var delta) &&
+            delta.GetString() is { } text &&
+            text.Contains("resourceUri", StringComparison.Ordinal)).ToList();
 
         Assert.True(leaked.Count == 0,
-            $"Found {leaked.Count} TEXT_MESSAGE_CONTENT event(s) with type=mcp-activity that should have been replaced with ACTIVITY_SNAPSHOT.");
+            $"Found {leaked.Count} TEXT_MESSAGE_CONTENT event(s) carrying an MCP-apps payload; it must be an ACTIVITY_SNAPSHOT.");
     }
 
-    [Fact(Skip = Skip)]
-    public async Task RegularStateSnapshot_IsStillPresent_Async()
+    [AgUiEndpointFact]
+    public async Task RegularStateSnapshot_IsStillPresent()
     {
-        using var cts = CreateLinkedCts(s_testTimeout);
+        using var cts = CreateTimeoutCts(s_testTimeout);
         var events = await s_events.Value.WaitAsync(cts.Token);
 
         var regularSnapshot = events.FirstOrDefault(e =>
@@ -335,50 +322,60 @@ public sealed class ActivitySnapshotConformanceTests
         new(() => CollectIncrementEventsWithApprovalAsync(CancellationToken.None));
 
     // increment_counter is approval-gated (HumanInTheLoop:ApprovalRequiredTools, see
-    // human-in-the-loop.md): the first run pauses with a synthetic request_approval tool call.
-    // Approve it and resume on the same thread, returning the events of both runs combined.
+    // human-in-the-loop.md): the first run ends with RUN_FINISHED carrying an interrupt outcome.
+    // Approve it with a resume entry on the same thread, returning both runs' events combined.
     private static async Task<List<JsonElement>> CollectIncrementEventsWithApprovalAsync(
         CancellationToken cancellationToken)
     {
         var threadId = Guid.NewGuid().ToString();
         var events = await SendAgUiRequestAsync(BuildIncrementBody(threadId), cancellationToken);
 
-        var approvalStart = events.FirstOrDefault(e =>
-            GetEventType(e) == "TOOL_CALL_START" &&
-            e.TryGetProperty("toolCallName", out var name) &&
-            name.GetString() == "request_approval");
-        if (approvalStart.ValueKind != JsonValueKind.Object)
+        var interrupts = FindInterrupts(events);
+        if (interrupts.Count == 0)
             return events; // no approval requested — return the single run as-is
 
-        var callId = approvalStart.GetProperty("toolCallId").GetString()!;
-        var argsJson = string.Concat(events
-            .Where(e => GetEventType(e) == "TOOL_CALL_ARGS" && e.GetProperty("toolCallId").GetString() == callId)
-            .Select(e => e.GetProperty("delta").GetString()));
-
-        // Echo the request payload back with the decision appended (the wire contract).
-        var response = new Dictionary<string, object?>();
-        using (var payload = JsonDocument.Parse(argsJson))
+        // The decision echoes the tool call from the interrupt's metadata back verbatim; that is what
+        // lets the backend rebuild the approval without correlation state between the two runs.
+        var resume = interrupts.Select(interrupt => new
         {
-            foreach (var property in payload.RootElement.EnumerateObject())
-                response[property.Name] = property.Value.Clone();
-        }
-        response["approved"] = true;
-        response["reason"] = null;
-        response["always_approve"] = null;
+            interruptId = interrupt.GetProperty("id").GetString(),
+            status = "resolved",
+            payload = new
+            {
+                toolCall = interrupt.GetProperty("metadata").GetProperty("toolCall").Clone(),
+                approved = true,
+                reason = (string?)null,
+                alwaysApprove = (string?)null,
+            }
+        }).ToArray();
 
         var resumeBody = new
         {
             threadId,
             runId = Guid.NewGuid().ToString(),
-            messages = new object[] { new { id = callId, role = "tool", content = JsonSerializer.Serialize(response), toolCallId = callId } },
+            messages = Array.Empty<object>(),
             tools = Array.Empty<object>(),
             context = Array.Empty<object>(),
             state = new { conversation = new { selectedResources = Array.Empty<string>(), counter = 0 } },
-            forwardedProps = new { }
+            forwardedProps = new { },
+            resume,
         };
         events.AddRange(await SendAgUiRequestAsync(resumeBody, cancellationToken));
         return events;
     }
+
+    /// <summary>Interrupts carried by a run's <c>RUN_FINISHED</c> outcome, if any.</summary>
+    private static List<JsonElement> FindInterrupts(List<JsonElement> events) =>
+    [
+        .. events
+            .Where(e => GetEventType(e) == "RUN_FINISHED")
+            .SelectMany(e => e.TryGetProperty("outcome", out var outcome) &&
+                             outcome.ValueKind == JsonValueKind.Object &&
+                             outcome.TryGetProperty("interrupts", out var list) &&
+                             list.ValueKind == JsonValueKind.Array
+                ? list.EnumerateArray()
+                : [])
+    ];
 
     private static object BuildIncrementBody(string threadId) => new
     {
@@ -391,10 +388,10 @@ public sealed class ActivitySnapshotConformanceTests
         forwardedProps = new { }
     };
 
-    [Fact(Skip = Skip)]
-    public async Task NonMcpTool_IncrementCounter_DoesNotEmitActivitySnapshot_Async()
+    [AgUiEndpointFact]
+    public async Task NonMcpTool_IncrementCounter_DoesNotEmitActivitySnapshot()
     {
-        using var cts = CreateLinkedCts(s_testTimeout);
+        using var cts = CreateTimeoutCts(s_testTimeout);
         var events = await s_incrementEvents.Value.WaitAsync(cts.Token);
 
         Assert.False(
@@ -402,10 +399,27 @@ public sealed class ActivitySnapshotConformanceTests
             $"Expected no ACTIVITY_SNAPSHOT for non-MCP tool. Full sequence: {EventSequence(events)}");
     }
 
-    [Fact(Skip = Skip)]
-    public async Task NonMcpTool_IncrementCounter_EmitsToolCallResult_Async()
+    [AgUiEndpointFact]
+    public async Task ApprovalGatedTool_PausesWithConfirmationInterrupt()
     {
-        using var cts = CreateLinkedCts(s_testTimeout);
+        using var cts = CreateTimeoutCts(s_testTimeout);
+        var events = await s_incrementEvents.Value.WaitAsync(cts.Token);
+
+        var interrupts = FindInterrupts(events);
+        Assert.True(interrupts.Count > 0,
+            $"Expected an interrupt outcome for the approval-gated tool. Full sequence: {EventSequence(events)}");
+
+        var interrupt = interrupts[0];
+        Assert.Equal("confirmation", interrupt.GetProperty("reason").GetString());
+        Assert.Equal(
+            "increment_counter",
+            interrupt.GetProperty("metadata").GetProperty("toolCall").GetProperty("name").GetString());
+    }
+
+    [AgUiEndpointFact]
+    public async Task NonMcpTool_IncrementCounter_EmitsToolCallResult()
+    {
+        using var cts = CreateTimeoutCts(s_testTimeout);
         var events = await s_incrementEvents.Value.WaitAsync(cts.Token);
 
         Assert.True(

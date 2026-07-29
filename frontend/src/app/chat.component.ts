@@ -1,6 +1,6 @@
-import { ChangeDetectionStrategy, Component, computed, effect, ElementRef, inject, linkedSignal, resource, signal, untracked, viewChild } from '@angular/core';
+import { ChangeDetectionStrategy, Component, computed, effect, ElementRef, inject, linkedSignal, signal, untracked, viewChild } from '@angular/core';
 import { httpResource } from '@angular/common/http';
-import { HttpAgent, Message, RunAgentParameters } from "@ag-ui/client"
+import { buildResumeArray, HttpAgent, Interrupt, Message, ResumeEntry, RunAgentParameters } from "@ag-ui/client"
 import { JsonPipe } from '@angular/common';
 import { form, FormField, required } from '@angular/forms/signals';
 import { WebmcpService } from './webmcp.service';
@@ -23,16 +23,37 @@ interface RiskClassification {
 
 type ApprovalDecision = 'approved' | 'always' | 'rejected';
 
-// A client-side call surfaced by a run over the AG-UI tool-call wire format. `tool` entries
-// (WebMCP frontend tools) resolve by executing them once the run finishes; `approval` entries
-// (synthetic `request_approval` calls, see human-in-the-loop.md) resolve by a user decision.
-// The run resumes once every pending call is resolved.
+// The tool call an interrupt asks the user to approve, as the backend puts it on
+// `interrupt.metadata` and expects it echoed back in the resume payload.
+interface ApprovalToolCall {
+  callId: string;
+  name: string;
+  arguments?: Record<string, unknown>;
+}
+
+// Mirrors the library's own (unexported) ResumeResponse: what buildResumeArray expects per open
+// interrupt. `resolved` carries the answer, `cancelled` declines the interrupt without one.
+type ResumeResponse = { status: 'resolved'; payload?: unknown } | { status: 'cancelled' };
+
+/** Narrows untyped wire data to a JSON object — neither a primitive nor an array. */
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+// Work a finished run left for the client to resolve before the conversation can continue.
+// `tool` entries are WebMCP frontend tool calls, resolved by executing them; `approval` entries are
+// AG-UI interrupts (see human-in-the-loop.md), resolved by a user decision; `cancelledInterrupt`
+// entries are interrupts this client cannot answer and therefore declines. Tool results travel back
+// as tool messages, decisions and declines as `resume` entries — the run resumes once nothing is
+// unresolved.
 type PendingClientCall =
-  | { kind: 'tool'; id: string; name: string; args: string; result?: string }
-  | { kind: 'approval'; id: string; args: string; decision?: ApprovalDecision };
+  // `args` is filled in from onToolCallEndEvent, which hands over the parsed arguments, so it stays
+  // unset while the deltas are still streaming (and if the run dies before TOOL_CALL_END).
+  | { kind: 'tool'; id: string; name: string; args?: Record<string, any>; result?: string }
+  | { kind: 'approval'; id: string; toolCall: ApprovalToolCall; decision?: ApprovalDecision }
+  | { kind: 'cancelledInterrupt'; id: string };
 
 interface ApprovalViewModel {
-  id: string;
   toolName: string;
   args: Record<string, unknown>;
   decision?: ApprovalDecision;
@@ -45,9 +66,10 @@ interface MessageViewModel {
   toolCallId?: string;
   isGenerating?: boolean;
   error?: boolean;
-  activityType?: string;
   resourceUri?: string;
   messageId?: string;
+  /** Identifies an approval card with the AG-UI interrupt it answers. */
+  interruptId?: string;
   toolInput?: Record<string, unknown>;
   toolResult?: unknown;
   attachments?: Attachment[];
@@ -167,12 +189,12 @@ interface MessageViewModel {
                   } @else {
                     <div class="chat__approvalActions">
                       <button type="button" class="chat__approvalBtn chat__approvalBtn--approve"
-                        (click)="onApprovalDecision(message.toolCallId!, 'approved')">✓ Approve</button>
+                        (click)="onApprovalDecision(message.interruptId!, 'approved')">✓ Approve</button>
                       <button type="button" class="chat__approvalBtn chat__approvalBtn--always"
                         title="Approve and don't ask again for this tool in this conversation"
-                        (click)="onApprovalDecision(message.toolCallId!, 'always')">∞ Always allow</button>
+                        (click)="onApprovalDecision(message.interruptId!, 'always')">∞ Always allow</button>
                       <button type="button" class="chat__approvalBtn chat__approvalBtn--reject"
-                        (click)="onApprovalDecision(message.toolCallId!, 'rejected')">✕ Reject</button>
+                        (click)="onApprovalDecision(message.interruptId!, 'rejected')">✕ Reject</button>
                     </div>
                   }
                 }
@@ -612,13 +634,6 @@ interface MessageViewModel {
       }
     }
 
-    .chat__activityContent {
-      font-size: 0.7rem;
-      margin: 0.25rem 0 0;
-      white-space: pre-wrap;
-      word-break: break-all;
-    }
-
     .chat__message.chat__message--tool {
       .chat__content {
         background: #e0f7fa;
@@ -887,13 +902,36 @@ export class ChatComponent {
 
   private pendingClientCalls: PendingClientCall[] = [];
   protected readonly awaitingApproval = signal(false);
+  /**
+   * Set by `onRunFinishedEvent` when the finished run left work that should continue the
+   * conversation. The continuation must not start from inside the subscriber: the SDK assigns
+   * `agent.pendingInterrupts` only after every subscriber has returned, so a run started there
+   * would still see the previous run's interrupts as open and be rejected by `runAgent`'s
+   * "pending interrupt(s) not addressed by resume" check. `runAgent` acts on this instead.
+   */
+  private resumeRequested = false;
+  /** Set by onRunErrorEvent so runAgent's catch does not report the same failure twice. */
+  private runErrorReported = false;
+  /**
+   * Set by both terminal run handlers. A stream can end without either of them (see runAgent), and
+   * then nothing has taken the UI out of its "running" state — this is how runAgent notices.
+   */
+  private runSettled = false;
+  /** Set by cancelRun so a run that ends without a terminal event can still be reported as such. */
+  private abortRequested = false;
 
   private agent?: HttpAgent;
   private initializeAgent(agentAlias: string): void {
-    // Switching agents discards in-flight client calls: the backend re-presents pending
-    // approvals from its per-conversation session queue when asked again, and stale frontend
-    // tool calls must not execute against the new agent's runs.
+    // Switching agents abandons whatever the old agent left open, so drop it here: stale frontend
+    // tool calls must not execute against the new agent's runs, and an unanswered approval can no
+    // longer be answered at all. The agent below is constructed without a `threadId`, and
+    // AbstractAgent's constructor then invents one (`this.threadId = threadId ?? uuidv4()`), so the
+    // new agent talks to a brand-new backend session (AGUIEndpoint resolves the session from the
+    // thread id) — nothing from the old conversation is reachable from it. The abandoned card is not
+    // lost data either: should that thread ever run again, ToolApprovalHistoryNormalizer's third
+    // repair answers the orphaned request with a synthetic rejection.
     this.pendingClientCalls = [];
+    this.resumeRequested = false;
     this.awaitingApproval.set(false);
     const agent = new HttpAgent({
       url: `/agents/routed/${agentAlias}/agui`,
@@ -903,23 +941,21 @@ export class ChatComponent {
       onTextMessageStartEvent: ({ event }) => {
         console.log('Text message started:', event);
         this.status.set('Assistant is typing...');
-        this.messages.update(msgs => ([...msgs, { role: 'assistant', content: '', isGenerating: true }]));
+        this.upsertAssistantMessage(event.messageId, msg => ({ ...msg, isGenerating: true }));
       },
       onTextMessageContentEvent: ({ textMessageBuffer, event }) => {
         // textMessageBuffer holds content BEFORE this delta; append event.delta
         // to keep the streamed message from lagging one chunk behind.
         const content = textMessageBuffer + event.delta;
-        this.updateLastAssistantMessage(
-          msg => ({ ...msg, content }),
-          { role: 'assistant', content }
-        );
+        this.upsertAssistantMessage(event.messageId, msg => ({ ...msg, content }));
       },
-      onTextMessageEndEvent: async ({ textMessageBuffer }) => {
+      onTextMessageEndEvent: async ({ textMessageBuffer, event }) => {
         console.log('Text message ended:', textMessageBuffer);
-        this.updateLastAssistantMessage(
-          msg => ({ ...msg, content: textMessageBuffer, isGenerating: false }),
-          { role: 'assistant', content: textMessageBuffer, isGenerating: false }
-        );
+        this.upsertAssistantMessage(event.messageId, msg => ({
+          ...msg,
+          content: textMessageBuffer,
+          isGenerating: false,
+        }));
         this.status.set('Ready to chat');
       },
       onReasoningStartEvent: ({ event }) => {
@@ -947,16 +983,6 @@ export class ChatComponent {
         console.log('Reasoning ended:', event);
       },
       onToolCallStartEvent: ({ event }) => {
-        // Approval request: render a card instead of a tool bubble; do not auto-execute.
-        if (event.toolCallName === 'request_approval') {
-          this.messages.update(msgs => [
-            ...msgs,
-            { role: 'approval', content: '', toolCallId: event.toolCallId }
-          ]);
-          this.pendingClientCalls.push({ kind: 'approval', id: event.toolCallId, args: '' });
-          this.status.set('Waiting for your approval…');
-          return;
-        }
         // Add a tool message to the chat for any tool call (local or backend)
         this.messages.update(msgs => [
           ...msgs,
@@ -969,42 +995,12 @@ export class ChatComponent {
         ]);
         // If it's a frontend tool, collect for execution once the run finishes
         if (this.webmcp.tools().some(t => t.name === event.toolCallName)) {
-          this.pendingClientCalls.push({ kind: 'tool', id: event.toolCallId, name: event.toolCallName, args: '' });
+          this.pendingClientCalls.push({ kind: 'tool', id: event.toolCallId, name: event.toolCallName });
           this.status.set(`Executing ${event.toolCallName}...`);
-        }
-      },
-      onToolCallArgsEvent: ({ event }) => {
-        // Find the matching pending client call and append args
-        const call = this.pendingClientCalls.find(tc => tc.id === event.toolCallId);
-        if (call) {
-          call.args += event.delta || '';
         }
       },
       onToolCallEndEvent: async ({ toolCallName, toolCallArgs, event }) => {
         console.log('Tool call', toolCallName, toolCallArgs, event);
-        // Approval request complete: parse the payload and populate the card.
-        const approvalCall = this.pendingClientCalls.find(tc => tc.id === event.toolCallId);
-        if (approvalCall?.kind === 'approval') {
-          let parsed: any = {};
-          try {
-            parsed = approvalCall.args ? JSON.parse(approvalCall.args) : {};
-          } catch {
-            parsed = {};
-          }
-          this.messages.update(msgs => msgs.map(msg =>
-            msg.role === 'approval' && msg.toolCallId === approvalCall.id
-              ? {
-                  ...msg,
-                  approval: {
-                    id: parsed.id ?? approvalCall.id,
-                    toolName: parsed.tool_call?.name ?? 'unknown tool',
-                    args: parsed.tool_call?.arguments ?? {},
-                  }
-                }
-              : msg
-          ));
-          return;
-        }
         this.messages.update(msgs => {
           return msgs.map(msg =>
             msg.role === 'tool' && msg.toolCallId === event.toolCallId
@@ -1012,22 +1008,47 @@ export class ChatComponent {
               : msg
           );
         });
-        // Do not execute tool here; wait until run finishes
+        // No need to accumulate the argument deltas ourselves: the SDK concatenates them onto the
+        // tool call it tracks and hands the parsed object over here (JSON.parse in a try/catch, so a
+        // truncated stream yields `{}` rather than throwing). Hold it for the invocation below —
+        // the tool must not run before the run has finished.
+        const call = this.pendingClientCalls.find(tc => tc.id === event.toolCallId);
+        if (call?.kind === 'tool') {
+          call.args = toolCallArgs;
+        }
       },
       onToolCallResultEvent: async ({ event }) => {
         console.log('Tool call result', event);
+        // Server-side tools report their result as an event; frontend tools get theirs written into
+        // the bubble by the invokeTool loop below. Fill in both so the two look the same in the
+        // transcript instead of a server tool showing only `name(args)` with an empty body.
+        this.messages.update(msgs => msgs.map(msg =>
+          msg.role === 'tool' && msg.toolCallId === event.toolCallId
+            ? { ...msg, content: event.content }
+            : msg
+        ));
       },
       onRunStartedEvent: ({ event }) => {
         console.log('Run started', event);
       },
       onRunErrorEvent: ({ event }) => {
         this.isLoading.set(false);
-        // A failed/cancelled run invalidates the client calls it surfaced: the backend
-        // re-presents pending approvals from its session queue on the next run, and results
-        // for a failed run's tool calls must not be sent to a later one.
+        this.runErrorReported = true;
+        this.runSettled = true;
+        // A failed/cancelled run invalidates the client calls it surfaced: results for a failed run's
+        // tool calls must not be sent to a later one, and an approval card that is on screen when the
+        // run dies can no longer be answered — the resume it belongs to would never reach the model.
+        // Its interrupt has to be dropped from the SDK's list as well, or every later run is rejected
+        // for leaving it unanswered. The request is not stranded server-side: on this thread's next
+        // run ToolApprovalHistoryNormalizer's third repair answers the now-orphaned approval request
+        // with a synthetic rejection, so the conversation continues (with the gated call refused).
         this.pendingClientCalls = [];
+        agent.pendingInterrupts = [];
         this.awaitingApproval.set(false);
-        if (this.isAbortError(event.rawEvent)) {
+        // The client marks an aborted run with a typed code rather than leaving it to be guessed from
+        // the untyped rawEvent: transformHttpEventStream turns an AbortError on the event stream into
+        // `{ type: RUN_ERROR, message, code: "abort", rawEvent: err }`, and RUN_ERROR declares `code`.
+        if (event.code === 'abort') {
           console.log('Run cancelled', event);
           this.status.set('Cancelled');
           this.messages.update(msgs => {
@@ -1055,7 +1076,6 @@ export class ChatComponent {
           this.upsertActivityMessage(event.messageId, {
             role: 'risk',
             content: '',
-            activityType: event.activityType,
             messageId: event.messageId,
             risk: {
               risk: typeof content?.['risk'] === 'string' ? content['risk'] : 'Unknown',
@@ -1073,8 +1093,7 @@ export class ChatComponent {
           const toolResult = content?.['result'];
           this.upsertActivityMessage(event.messageId, {
             role: 'activity',
-            content: JSON.stringify(content, null, 2),
-            activityType: event.activityType,
+            content: '',
             resourceUri,
             messageId: event.messageId,
             toolInput,
@@ -1086,13 +1105,30 @@ export class ChatComponent {
         console.warn('Unhandled activity snapshot type:', event.activityType);
       },
       onStateSnapshotEvent: ({ event }) => {
+        // No need to return a mutation: the SDK already applies the snapshot to its own state.
         this.conversationState.set(event.snapshot);
-        return { state: event.snapshot };
       },
-      onRunFinishedEvent: async ({ event }) => {
+      onRunFinishedEvent: async (params) => {
+        const { event } = params;
         console.log('Run finished', event.result, event);
-        this.isLoading.set(false);
-        this.agent?.setMessages([]); // server supports session management, no need to resend history
+        // Deliberately NOT unlocking the composer here. RUN_FINISHED is not the end of the work: the
+        // invoke loop below still awaits every WebMCP tool, and a continuation run follows. Clearing
+        // isLoading at this point let the user start a second run while this one was suspended on a
+        // tool, and the second run's `runAgent` resets `runSettled`/`resumeRequested` — after which
+        // THIS run took the "no terminal event" recovery branch and discarded the tool result it had
+        // just computed, so the tool ran (side effects and all) and the model never heard the outcome.
+        // runAgent's finally clears isLoading, and on the continuation path maybeResumeRun reaches
+        // runAgent synchronously, so nothing is left stuck and there is no window in between.
+        this.runSettled = true;
+        agent.setMessages([]); // server supports session management, no need to resend history
+
+        // An interrupt outcome is the protocol's human-in-the-loop pause: the backend stopped before
+        // a gated tool call and waits for a decision, which travels back as a `resume` entry.
+        if (params.outcome === 'interrupt') {
+          for (const interrupt of params.interrupts) {
+            this.addApprovalRequest(interrupt);
+          }
+        }
 
         // Execute pending frontend tool calls right away, holding each result on its entry;
         // approval entries resolve later in onApprovalDecision. maybeResumeRun re-runs once
@@ -1101,18 +1137,11 @@ export class ChatComponent {
           if (call.kind !== 'tool') {
             continue;
           }
-          let parsedArgs: Record<string, any> = {};
           try {
-            const parsed: unknown = call.args ? JSON.parse(call.args) : {};
-            parsedArgs = (parsed && typeof parsed === 'object' && !Array.isArray(parsed))
-              ? (parsed as Record<string, any>)
-              : {};
-          } catch {
-            parsedArgs = {};
-          }
-
-          try {
-            const invokeToolResponse = await this.webmcp.invokeTool(call.name, parsedArgs);
+            // `args` is unset only if TOOL_CALL_END never arrived for this call; invoking with no
+            // arguments still lets the tool reply with its own validation error, which is more useful
+            // to the model than a silently skipped call.
+            const invokeToolResponse = await this.webmcp.invokeTool(call.name, call.args);
             call.result = typeof invokeToolResponse === 'string'
               ? invokeToolResponse
               : JSON.stringify(invokeToolResponse);
@@ -1130,7 +1159,8 @@ export class ChatComponent {
           });
         }
 
-        await this.maybeResumeRun();
+        // Hand the continuation to runAgent — see resumeRequested for why not from here.
+        this.resumeRequested = true;
       }
     });
 
@@ -1138,17 +1168,98 @@ export class ChatComponent {
   }
 
   /**
+   * Renders an approval card for an open interrupt and queues it for the resume that answers it.
+   * The pending tool call rides on the interrupt's metadata, so the card needs no extra round-trip.
+   * An interrupt that fails either check below is declined rather than ignored — see declineInterrupt.
+   */
+  private addApprovalRequest(interrupt: Interrupt): void {
+    if (this.pendingClientCalls.some(call => call.id === interrupt.id)) {
+      return;
+    }
+
+    // Only `confirmation` interrupts are approvals. The backend picks that reason deliberately over
+    // `tool_call` (ToolApprovalInterruptMiddleware) because a call awaiting approval has not been
+    // streamed, so a client cannot correlate it with anything it has seen. Rendering some future
+    // interrupt kind as an approval card would ask the user to approve a call that isn't there.
+    if (interrupt.reason !== 'confirmation') {
+      this.declineInterrupt(interrupt, `An unsupported interrupt (${interrupt.reason}) arrived.`);
+      return;
+    }
+
+    // `metadata` is untyped on the wire (`Record<string, any>`), so validate it as strictly as the
+    // activity payloads are validated in onActivitySnapshotEvent — `name` is what the card claims is
+    // being approved and `arguments` is fed to the `| json` pipe.
+    const toolCall = this.parseApprovalToolCall(interrupt.metadata?.['toolCall']);
+    if (!toolCall) {
+      // The backend always puts the pending call on the metadata; without it there is nothing to
+      // approve and nothing meaningful to echo back, so surface it instead of inventing a call.
+      this.declineInterrupt(interrupt, 'An approval request arrived without the tool call it refers to.');
+      return;
+    }
+
+    this.pendingClientCalls.push({ kind: 'approval', id: interrupt.id, toolCall });
+    this.messages.update(msgs => [...msgs, {
+      role: 'approval',
+      content: '',
+      interruptId: interrupt.id,
+      approval: { toolName: toolCall.name, args: toolCall.arguments ?? {} },
+    }]);
+    this.status.set('Waiting for your approval…');
+  }
+
+  /**
+   * Validates the pending call the backend puts on `interrupt.metadata`. `callId` and `name` must
+   * really be strings and `arguments`, if present, a plain object: the `toolCall` is echoed back
+   * field-for-field in the resume payload and the AG-UI server SDK rebuilds the approval — and with
+   * it the call that gets executed — from that echo (see ToolApprovalHistoryNormalizer's second repair,
+   * where the re-supplied request supersedes the stored one). Coercing a malformed `arguments` to
+   * `{}` here would therefore not be a display fallback but a silent rewrite of the approved call, so
+   * anything unexpected fails the whole approval instead.
+   */
+  private parseApprovalToolCall(value: unknown): ApprovalToolCall | undefined {
+    if (!isPlainObject(value)) {
+      return undefined;
+    }
+    const { callId, name, arguments: args } = value;
+    if (typeof callId !== 'string' || typeof name !== 'string') {
+      return undefined;
+    }
+    // `arguments` is optional on the wire — a parameterless call serializes it as absent or null.
+    if (args !== undefined && args !== null && !isPlainObject(args)) {
+      return undefined;
+    }
+    // Rebuilt rather than passed through, so the echo carries only these three fields. That is the
+    // whole of what the server can read back anyway: the SDK deserializes the payload's `toolCall`
+    // into AGUIToolCallInfo, which models `callId`, `name` and `arguments` and nothing else.
+    return { callId, name, ...(isPlainObject(args) ? { arguments: args } : {}) };
+  }
+
+  /**
+   * Answers an interrupt this client cannot act on with a `cancelled` resume entry, and says so in
+   * the transcript. Dropping it instead would poison the thread: defaultApplyEvents assigns
+   * `agent.pendingInterrupts` from the run-finished event *after* the subscribers return, so an
+   * interrupt nothing queued still counts as open, maybeResumeRun sees no pending call and never
+   * resumes, and the user's next message is rejected by `runAgent` with "Thread has N pending
+   * interrupt(s) not addressed by resume" — a burnt turn showing only the generic error.
+   */
+  private declineInterrupt(interrupt: Interrupt, message: string): void {
+    console.error('Declining an interrupt this client cannot answer:', message, interrupt);
+    this.pendingClientCalls.push({ kind: 'cancelledInterrupt', id: interrupt.id });
+    this.messages.update(msgs => [...msgs, { role: 'assistant', content: message, error: true }]);
+  }
+
+  /**
    * Records the user's decision on an approval card, then resumes the run via
    * maybeResumeRun once every pending client call is resolved.
    */
-  protected async onApprovalDecision(toolCallId: string, decision: ApprovalDecision): Promise<void> {
-    const call = this.pendingClientCalls.find(tc => tc.id === toolCallId);
+  protected async onApprovalDecision(interruptId: string, decision: ApprovalDecision): Promise<void> {
+    const call = this.pendingClientCalls.find(tc => tc.id === interruptId);
     if (call?.kind !== 'approval' || call.decision) {
       return;
     }
     call.decision = decision;
     this.messages.update(msgs => msgs.map(msg =>
-      msg.role === 'approval' && msg.toolCallId === toolCallId && msg.approval
+      msg.role === 'approval' && msg.interruptId === interruptId && msg.approval
         ? { ...msg, approval: { ...msg.approval, decision } }
         : msg
     ));
@@ -1156,56 +1267,95 @@ export class ChatComponent {
   }
 
   /**
-   * Resumes the paused run once every pending client call is resolved — a result for
-   * frontend tools, a decision for approvals — by sending one tool-result message per
-   * call and re-running. Until then (i.e. while approvals await the user, since tool
-   * calls resolve within the run-finished handler) the composer stays locked.
+   * Resumes the paused run once every pending client call is resolved — a result for frontend
+   * tools, a decision for approvals, nothing for a declined interrupt. Tool results go back as tool
+   * messages, decisions and declines as `resume` entries. Until then (i.e. while approvals await the
+   * user, since tool calls resolve within the run-finished handler) the composer stays locked.
+   *
+   * Failures are handled here rather than at the call sites because the template calls
+   * onApprovalDecision without awaiting it: a throw escaping this method on that path is an
+   * unhandled rejection nobody reports, and it would leave `awaitingApproval` set — a composer
+   * locked behind an approval card that has already been answered.
    */
   private async maybeResumeRun(): Promise<void> {
-    if (this.pendingClientCalls.length === 0) {
-      this.awaitingApproval.set(false);
-      this.status.set('Ready to chat');
-      return;
-    }
-    const unresolved = this.pendingClientCalls.some(call =>
-      call.kind === 'tool' ? call.result === undefined : !call.decision);
-    if (unresolved) {
-      this.awaitingApproval.set(true);
-      this.status.set('Awaiting your approval');
-      return;
-    }
+    try {
+      if (this.pendingClientCalls.length === 0) {
+        this.awaitingApproval.set(false);
+        this.status.set('Ready to chat');
+        return;
+      }
+      // Nothing may resume while any call is open: an approval without a decision, or a frontend tool
+      // whose result has not landed. The tool half guards a re-entrancy window that exists in
+      // principle — addApprovalRequest renders its card, buttons live, *before* the run-finished
+      // handler awaits the invokeTool loop, so a click could land mid-loop and resume with
+      // `content: undefined` for a call still running. Today it cannot: the backend never surfaces an
+      // approval and a WebMCP tool call in the same run, because FICC escalation makes them siblings
+      // and ToolApprovalAgent then defers one of the two to the next run (see human-in-the-loop.md
+      // and ToolApprovalSiblingEscalationTests). That is a backend property, so keep the invariant
+      // enforced here too.
+      const unresolved = this.pendingClientCalls.some(call =>
+        (call.kind === 'approval' && !call.decision) || (call.kind === 'tool' && call.result === undefined));
+      if (unresolved) {
+        this.awaitingApproval.set(true);
+        this.status.set('Awaiting your approval');
+        return;
+      }
 
-    const toolMessages: Message[] = this.pendingClientCalls.map(call => ({
-      id: call.id,
-      role: 'tool',
-      content: call.kind === 'tool' ? call.result! : this.buildApprovalResponse(call),
-      toolCallId: call.id,
-    }));
-    this.pendingClientCalls = [];
-    this.awaitingApproval.set(false);
-    this.agent?.setMessages([]); // server supports session management, no need to resend history
-    this.agent?.addMessages(toolMessages);
-    await this.runAgent();
+      const toolMessages: Message[] = this.pendingClientCalls
+        .filter(call => call.kind === 'tool')
+        .map(call => ({ id: call.id, role: 'tool', content: call.result!, toolCallId: call.id }));
+
+      // A decision resolves its interrupt; one this client could not make sense of is cancelled
+      // rather than left hanging, since buildResumeArray insists on an answer for every open one.
+      const responses: Record<string, ResumeResponse> = {};
+      for (const call of this.pendingClientCalls) {
+        if (call.kind === 'approval') {
+          responses[call.id] = { status: 'resolved', payload: this.buildApprovalPayload(call) };
+        } else if (call.kind === 'cancelledInterrupt') {
+          responses[call.id] = { status: 'cancelled' };
+        }
+      }
+      // The interrupts come from the SDK's own list of what is still open rather than a copy kept
+      // here, so buildResumeArray's "a response for every open interrupt and nothing else" check is
+      // a real check — it is the same invariant runAgent enforces before it starts the next run.
+      const openInterrupts = this.agent?.pendingInterrupts ?? [];
+      const resume = Object.keys(responses).length
+        ? buildResumeArray(openInterrupts, responses)
+        : undefined;
+
+      this.pendingClientCalls = [];
+      this.awaitingApproval.set(false);
+      this.agent?.setMessages([]); // server supports session management, no need to resend history
+      if (toolMessages.length) {
+        this.agent?.addMessages(toolMessages);
+      }
+      await this.runAgent(resume);
+    } catch (error) {
+      // buildResumeArray throws if the responses and the SDK's open interrupts ever disagree.
+      // Surface it instead of leaving the composer locked behind awaitingApproval.
+      console.error('Error resuming run:', error);
+      this.messages.update(msgs => [...msgs, {
+        role: 'assistant',
+        content: 'Sorry, the conversation could not be resumed. Please try again.',
+        error: true,
+      }]);
+      this.status.set('Error occurred');
+      this.resetPendingWork();
+    }
   }
 
   /**
-   * Builds the `request_approval` tool result: echoes the request payload (id + tool_call)
-   * verbatim so the backend bridge can reconstruct the approval, plus the decision and the
-   * optional `always_approve` rule scope.
+   * Builds the resume payload for an approval interrupt: the decision plus the tool call echoed
+   * back field-for-field (as parseApprovalToolCall rebuilt it), which is what lets the backend
+   * rebuild the approval without keeping correlation state between the two runs. `alwaysApprove`
+   * asks it to remember a standing rule.
    */
-  private buildApprovalResponse(call: Extract<PendingClientCall, { kind: 'approval' }>): string {
-    let request: Record<string, unknown> = {};
-    try {
-      request = call.args ? JSON.parse(call.args) : {};
-    } catch {
-      request = {};
-    }
-    return JSON.stringify({
-      ...request,
+  private buildApprovalPayload(call: Extract<PendingClientCall, { kind: 'approval' }>): unknown {
+    return {
+      toolCall: call.toolCall,
       approved: call.decision !== 'rejected',
-      reason: null,
-      always_approve: call.decision === 'always' ? 'tool' : null,
-    });
+      alwaysApprove: call.decision === 'always' ? 'tool' : null,
+    };
   }
 
   protected async onSubmit(event: Event): Promise<void> {
@@ -1271,9 +1421,13 @@ export class ChatComponent {
     this.pendingAttachments.update(a => a.filter(att => att.fileId !== fileId));
   }
 
-  private async runAgent(): Promise<void> {
+  private async runAgent(resume?: ResumeEntry[]): Promise<void> {
     this.isLoading.set(true);
     this.status.set('Agent thinking...');
+    this.resumeRequested = false;
+    this.runErrorReported = false;
+    this.runSettled = false;
+    this.abortRequested = false;
 
     try {
       const parameters: RunAgentParameters = {
@@ -1281,17 +1435,77 @@ export class ChatComponent {
           name: t.name,
           description: t.description,
           parameters: t.inputSchema,
-        }))
+        })),
+        ...(resume?.length ? { resume } : {}),
       };
       await this.agent?.runAgent(parameters);
     } catch (error) {
       console.error('Error running agent:', error);
-      this.messages.update(msgs => [...msgs, {
-        role: 'assistant',
-        content: 'Sorry, an error occurred. Please try again.'
-      }]);
-      this.status.set('Error occurred');
+      // onRunErrorEvent already rendered the server's own message, so only report when it did not —
+      // otherwise a cancelled or server-errored run shows both its own message and this generic one.
+      if (!this.runErrorReported) {
+        this.messages.update(msgs => [...msgs, {
+          role: 'assistant',
+          content: 'Sorry, an error occurred. Please try again.',
+          error: true,
+        }]);
+        this.status.set('Error occurred');
+      }
+      // Same reset as onRunErrorEvent, which does not fire for a failure raised by runAgent itself
+      // (e.g. a rejected run because an interrupt went unanswered). Without clearing the interrupts
+      // every later run would be rejected for the same reason.
+      this.resetPendingWork();
+      return;
+    } finally {
+      // The stream can also end without RUN_FINISHED or RUN_ERROR — a failure after the response
+      // started can only abort the body, and the client resolves rather than rejects on that path.
+      // Without this the composer would stay stuck showing "Agent thinking…".
       this.isLoading.set(false);
+    }
+
+    // Neither terminal event arrived, so nothing has undone what starting the run set up. This is
+    // what an abort looks like when it lands before the response headers do: the HTTP observable
+    // itself fails, and only a failure of the already-parsing event stream is turned into a
+    // `code: "abort"` RUN_ERROR — this earlier one reaches runAgent's own error handler, which
+    // deliberately swallows abort errors and resolves instead of rejecting, so the catch above does
+    // not see it either. A truncated event stream ends up here too: parseSSEStream's
+    // `complete: () => subject.complete()` ends the observable with no terminal event, and there is
+    // no synthetic one to stand in for it. Left alone, the status would sit on "Canceling…" forever
+    // and a half-streamed bubble would keep pulsing as if it were still being written.
+    if (!this.runSettled) {
+      this.status.set(this.abortRequested ? 'Cancelled' : 'Ready to chat');
+      this.messages.update(msgs => msgs.map(msg => msg.isGenerating ? { ...msg, isGenerating: false } : msg));
+      // A run that ends this way invalidates its pending work exactly like the two settled failure
+      // paths do (onRunErrorEvent inline, the catch above via this same method), so drop it here as
+      // well — otherwise it leaks into the next run. A tool entry whose TOOL_CALL_START streamed
+      // before the stream was cut still has `result === undefined`, so the NEXT run's
+      // onRunFinishedEvent invoke loop would execute that stale WebMCP tool and post its result as
+      // `{ role: 'tool', toolCallId: <the dead run's id> }`. And on a resume run the interrupt this
+      // run was answering is still in `agent.pendingInterrupts` — onInitialize only checks that every
+      // open interrupt is addressed, the list is reassigned from RUN_FINISHED — so the user's next
+      // message would be rejected with "Thread has N pending interrupt(s) not addressed by resume":
+      // the burnt turn declineInterrupt exists to prevent.
+      // Clearing `resumeRequested` along with the rest cannot swallow a continuation: only
+      // onRunFinishedEvent sets it, and that handler sets `runSettled` too, so it is already false
+      // on this path and the check below is unaffected.
+      this.resetPendingWork();
+    }
+
+    // The run has fully settled here, so agent.pendingInterrupts is up to date and a follow-up
+    // run is safe to start. maybeResumeRun reports its own failures — see its doc comment.
+    if (this.resumeRequested) {
+      this.resumeRequested = false;
+      await this.maybeResumeRun();
+    }
+  }
+
+  /** Drops everything a failed run left behind, so the next run is not rejected for its sake. */
+  private resetPendingWork(): void {
+    this.pendingClientCalls = [];
+    this.resumeRequested = false;
+    this.awaitingApproval.set(false);
+    if (this.agent) {
+      this.agent.pendingInterrupts = [];
     }
   }
 
@@ -1315,39 +1529,29 @@ export class ChatComponent {
 
     try {
       this.status.set('Canceling...');
+      this.abortRequested = true;
       this.agent.abortRun();
     } catch (error) {
       console.error('Error aborting agent run:', error);
     }
   }
 
-  private isAbortError(error: unknown): boolean {
-    if (error && typeof error === 'object') {
-      const anyError = error as { name?: unknown; message?: unknown };
-      const name = typeof anyError.name === 'string' ? anyError.name : '';
-      const message = typeof anyError.message === 'string' ? anyError.message : '';
-      return name === 'AbortError';
-    }
-    return false;
-  }
-
-  private updateLastAssistantMessage(updateFn: (msg: MessageViewModel) => MessageViewModel, fallback: MessageViewModel): void {
+  /**
+   * Routes a TEXT_MESSAGE_* event to its own bubble, keyed by messageId exactly like reasoning is.
+   * Positional matching ("the last assistant bubble still generating") would be wrong in principle:
+   * `verifyEvents` tracks active text messages in a map keyed by id and only rejects a *duplicate*
+   * id, so two text messages may legitimately be open at once, and interleaved deltas would then all
+   * pile into whichever bubble happened to come last. Creating on demand is belt-and-braces (the same
+   * verifier rejects a TEXT_MESSAGE_CONTENT whose START never arrived, so the bubble does exist) and
+   * keeps this symmetrical with upsertReasoningMessage, where no start handler opens the bubble.
+   */
+  private upsertAssistantMessage(messageId: string, updateFn: (msg: MessageViewModel) => MessageViewModel): void {
     this.messages.update(msgs => {
-      const lastIdx = msgs
-        .slice()
-        .map((v, i) => ({ v, i }))
-        .reverse()
-        .filter(({ v }) => v.role === 'assistant' && v.isGenerating)
-        .map(({ i }) => i)
-        .at(0)
-        ;
-      return lastIdx === undefined
-        ? [...msgs, fallback]
-        : [
-          ...msgs.slice(0, lastIdx),
-          updateFn(msgs[lastIdx]),
-          ...msgs.slice(lastIdx + 1)
-        ];
+      const idx = msgs.findIndex(m => m.role === 'assistant' && m.messageId === messageId);
+      if (idx < 0) {
+        return [...msgs, updateFn({ role: 'assistant', content: '', isGenerating: true, messageId })];
+      }
+      return [...msgs.slice(0, idx), updateFn(msgs[idx]), ...msgs.slice(idx + 1)];
     });
   }
 

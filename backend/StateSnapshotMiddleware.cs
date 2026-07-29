@@ -1,3 +1,4 @@
+using AGUI.Server;
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
 using System.Runtime.CompilerServices;
@@ -6,8 +7,18 @@ using System.Text.Json.Serialization;
 
 namespace AgenticTodos.Backend;
 
-public static class StateSnapshotMiddleware
+/// <summary>
+/// Agent-level streaming middleware that round-trips the AG-UI conversation state: it reads the state
+/// the client sent with the run, makes it available to the model and to tools, and emits the updated
+/// state back as a <see cref="ConversationStateContent"/> — which the mapping registered in
+/// <see cref="AGUIEndpoint.CreateStreamOptions"/> turns into a <c>STATE_SNAPSHOT</c> event.
+/// Mirrors <see cref="DetectMcpAppsActivityMiddleware"/> and <see cref="EUAIActRiskActivityMiddleware"/>.
+/// </summary>
+internal static class StateSnapshotMiddleware
 {
+    /// <summary>Key under which the run's state is published for tools; see <c>increment_counter</c>.</summary>
+    internal const string StatePropertyName = "my_state";
+
     public class ConversationState
     {
         [JsonPropertyName("selectedResources")]
@@ -17,7 +28,25 @@ public static class StateSnapshotMiddleware
         public int Counter { get; set; }
     }
 
-    public static Task<AgentResponse> RunAsync(
+    extension(AIAgentBuilder agentBuilder)
+    {
+        public AIAgentBuilder UseStateSnapshot() => agentBuilder.Use(runFunc: RunAsync, runStreamingFunc: RunStreamingAsync);
+    }
+
+    /// <summary>
+    /// Reads the state a run published for tools. Returns <see langword="false"/> when the run carried
+    /// no state — the indexer on <see cref="AdditionalPropertiesDictionary"/> throws on a missing key,
+    /// so callers must not index it blindly.
+    /// </summary>
+    internal static bool TryGetState(AgentRunOptions? options, out ConversationState? state)
+    {
+        state = options?.AdditionalProperties?.TryGetValue(StatePropertyName, out var value) == true
+            ? value as ConversationState
+            : null;
+        return state is not null;
+    }
+
+    private static Task<AgentResponse> RunAsync(
         IEnumerable<ChatMessage> messages,
         AgentSession? session,
         AgentRunOptions? options,
@@ -25,7 +54,7 @@ public static class StateSnapshotMiddleware
         CancellationToken cancellationToken)
         => RunStreamingAsync(messages, session, options, innerAgent, cancellationToken).ToAgentResponseAsync();
 
-    public static async IAsyncEnumerable<AgentResponseUpdate> RunStreamingAsync(
+    private static async IAsyncEnumerable<AgentResponseUpdate> RunStreamingAsync(
           IEnumerable<ChatMessage> messages,
           AgentSession? session,
           AgentRunOptions? options,
@@ -36,18 +65,31 @@ public static class StateSnapshotMiddleware
         var state = GetState(options);
 
         // make state object available to downstream processings
-        options?.AdditionalProperties ??= [];
-        options?.AdditionalProperties?["my_state"] = state;
+        // Only when there is state: ChatClientAgent copies these into ChatOptions.AdditionalProperties,
+        // and OmitAdditionalPropertiesMiddleware strips by value type — which cannot match a null. So
+        // writing the key unconditionally would leak `my_state: null` into the model request.
+        if (options is not null && state is not null)
+        {
+            options.AdditionalProperties ??= [];
+            options.AdditionalProperties[StatePropertyName] = state;
+        }
 
         // make state available to LLM
-        // Only inject the state snapshot when the conversation doesn't end with a pending tool
-        // call/result pair. The OpenAI Chat Completions API requires that an assistant message
-        // with tool_calls is immediately followed by the corresponding tool messages — no other
-        // message type (including system) may appear between them. Skipping injection here
-        // ensures the state snapshot is never inserted into that gap.
+        // Skip injection on any turn that carries tool results. `messages` holds only the new messages
+        // of this turn (both clients clear their local list once the server owns the history), so a
+        // continuation turn after a client-side tool call starts with a Tool message — and the assistant
+        // message bearing the matching tool_calls is already in the persisted history. Prepending at
+        // index 0 would land between the two, which the OpenAI Chat Completions API rejects: an
+        // assistant message with tool_calls must be followed immediately by its tool messages, with no
+        // other message type (system included) in the gap.
         if (state != null && !messages.Any(m => m.Role == ChatRole.Tool))
         {
-            var stateMessage = new ChatMessage(ChatRole.System, $"Current conversation state (selected resources / metadata):\n```json\n{JsonSerializer.Serialize(state)}\n```");
+            // Transient: this describes the current turn only. Persisting it would replay a stale
+            // snapshot on every later turn — see TransientChatMessages.
+            var stateMessage = new ChatMessage(
+                ChatRole.System,
+                $"Current conversation state (selected resources / counter):\n```json\n{JsonSerializer.Serialize(state)}\n```")
+                .AsTransient();
             messages = messages.Prepend(stateMessage);
         }
 
@@ -60,19 +102,23 @@ public static class StateSnapshotMiddleware
         // give the client a new state
         if (state is not null)
         {
-            var snapshot = JsonSerializer.SerializeToElement(new { conversation = state });
             yield return new AgentResponseUpdate
             {
-                Contents = [new DataContent(JsonSerializer.SerializeToUtf8Bytes(snapshot), "application/json")]
+                Contents = [new ConversationStateContent(JsonSerializer.SerializeToElement(new { conversation = state }))]
             };
         }
     }
 
-        private static ConversationState? GetState(AgentRunOptions? options)
+    /// <summary>
+    /// Reads the state the client sent with the run. The whole AG-UI request rides on
+    /// <c>ChatOptions.AdditionalProperties</c> under a single key; <c>TryGetRunAgentInput</c> is the
+    /// supported accessor for agents and delegating chat clients.
+    /// </summary>
+    private static ConversationState? GetState(AgentRunOptions? options)
     {
-        if (options is not ChatClientAgentRunOptions chatOpts) return null;
-        if (chatOpts.ChatOptions?.AdditionalProperties?.TryGetValue("ag_ui_state", out var stateObj) != true) return null;
-        if (stateObj is not JsonElement stateEl || stateEl.ValueKind != JsonValueKind.Object) return null;
+        if (options is not ChatClientAgentRunOptions { ChatOptions: { } chatOptions }) return null;
+        if (!chatOptions.TryGetRunAgentInput(out var input)) return null;
+        if (input.State is not { ValueKind: JsonValueKind.Object } stateEl) return null;
         if (!stateEl.TryGetProperty("conversation", out var convEl)) return null;
         return convEl.Deserialize<ConversationState>();
     }

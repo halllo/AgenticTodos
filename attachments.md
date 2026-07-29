@@ -4,101 +4,60 @@ How file attachments work in this project's chat, why we implement them the way 
 
 ## Requirements
 
-When a user attaches files to a chat message:
-
-1. The user picks files via a browser file picker (multiple allowed); the bytes are uploaded and stored on the backend filesystem.
-2. The file's **storage path** is recorded in the persisted chat history, but **must not be sent to the LLM**.
+1. Files are picked with a browser file picker (multiple allowed), uploaded, and stored on the backend filesystem.
+2. The file's **storage path** is recorded in the persisted chat history but **must not be sent to the LLM**.
 3. Only the **filename** is visible to the model.
-4. Attached files render in the message UI as clickable filename chips (download/open links), uniform for all file types.
+4. Attachments render in the message UI as clickable filename chips (download/open links), uniform for all file types.
 
-## State of the AG-UI protocol (as of 2026-06)
+## State of the AG-UI protocol (as of 2026-07)
 
-AG-UI does **not** yet have a finalized, spec-level recommendation for attachments. It is an open, draft-stage area:
+An open, draft-stage area: AG-UI has no finalized, spec-level recommendation, only a **roadmap proposal** — [#126](https://github.com/ag-ui-protocol/ag-ui/issues/126), [#280](https://github.com/ag-ui-protocol/ag-ui/issues/280), [#847](https://github.com/ag-ui-protocol/ag-ui/issues/847), [#1005](https://github.com/ag-ui-protocol/ag-ui/issues/1005).
 
-- The intended direction is to change a user message's `content` from a plain **string** to an **`InputContent[]` array** of typed parts: `ImageInputPart`, `DocumentInputPart`, `AudioInputPart`, `VideoInputPart`, each carrying either an `InputContentDataSource` (inline base64: `mimeType` + `data`) or an `InputContentUrlSource` (a URL reference to an uploaded file). The older shape is a single `BinaryInputContent` `{ mimeType, id?, url?, data?, filename? }`.
-- This is still a **roadmap proposal**, not a spec — see [#126](https://github.com/ag-ui-protocol/ag-ui/issues/126), [#280](https://github.com/ag-ui-protocol/ag-ui/issues/280), [#847](https://github.com/ag-ui-protocol/ag-ui/issues/847), [#1005](https://github.com/ag-ui-protocol/ag-ui/issues/1005).
-- **URL references are deliberately deferred** for security (SSRF/allowlist). The reference implementation (ADK, [#847](https://github.com/ag-ui-protocol/ag-ui/issues/847)) currently supports **base64 inline data only**.
-- **Converters strip attachment content today.** assistant-ui filed [#3810](https://github.com/assistant-ui/assistant-ui/issues/3810): `toAgUiMessages()` keeps only text. The .NET SDK has the same gap (see below). This is ecosystem-wide, not specific to one SDK.
+- **Intended direction:** a user message's `content` changes from a plain **string** to an **`InputContent[]` array** of typed parts — `ImageInputPart`, `DocumentInputPart`, `AudioInputPart`, `VideoInputPart` — each carrying an `InputContentDataSource` (inline base64: `mimeType` + `data`) or an `InputContentUrlSource` (a URL reference to an uploaded file). The older shape is a single `BinaryInputContent` `{ mimeType, id?, url?, data?, filename? }`.
+- **URL references are deliberately deferred** for security (SSRF/allowlist), so the reference implementation (ADK, [#847](https://github.com/ag-ui-protocol/ag-ui/issues/847)) is **base64-inline-only** — the one implemented structured option, and it would send the file bytes to the model, conflicting with requirements 2 and 3.
+- **Converters strip attachment content today**, ecosystem-wide rather than per-SDK: assistant-ui's `toAgUiMessages()` keeps only text ([#3810](https://github.com/assistant-ui/assistant-ui/issues/3810)), and the .NET SDK has the same gap (see below).
 
-### Why the structured path doesn't work for us yet
-
-The .NET `Microsoft.Agents.AI.AGUI` conversion `AGUIChatMessageExtensions.AsChatMessages` is **text-only**: it drops `name`, content-part arrays, and additional properties — only `TextContent`/tool/reasoning content survives. So even if the frontend sent a structured `InputContent[]` with a document part, the backend would discard it before it ever reached an agent.
-
-On top of that, the only implemented structured option (inline base64) would send the file bytes to the model — which conflicts with requirement #2/#3 (path/bytes hidden, only filename visible).
+> **Update (AG-UI .NET SDK 0.0.3).** Part of the SDK-side blocker is gone. `AGUIChatMessageExtensions.AsChatMessages` was **text-only** in `Microsoft.Agents.AI.AGUI` (dropping `name`, content-part arrays and additional properties); its successor in `AGUI.Abstractions` keeps `name` as `ChatMessage.AuthorName` and maps a user message's **`binary`** parts (`AGUIBinaryInputContent`) to `UriContent` (`url` set) or `DataContent` (`data` set), with the filename in `AdditionalProperties["filename"]`. The typed media parts (`image`/`document`/`audio`/`video`, i.e. `AGUIMediaInputContent`) are a **sibling** of `AGUIBinaryInputContent`, not a subclass, and are **still silently dropped**, so the `DocumentInputPart` migration below is not yet possible. A `binary` part with a `url` would survive the conversion today, but URL references stay deferred protocol-side for SSRF reasons.
 
 ## How we implement it
 
-Because the structured path is unavailable and partly unsafe for our needs, we carry the attachment reference **in the message text** as a hidden marker (mirroring the existing `DetectMcpAppsActivityMiddleware` + `McpAppsActivityInjector` idiom) and resolve it server-side. Conceptually this is the upload-and-reference-by-id approach the protocol is leaning toward — we just smuggle the id through text instead of a structured part.
+The attachment reference travels **in the message text** as a hidden marker, resolved server-side — conceptually the upload-and-reference-by-id approach the protocol is leaning toward, with the id smuggled through text instead of a structured part. It is the *inbound* half of a problem the repo solves twice, and the halves share no mechanism: outbound, the protocol has a seam, so extra data travels as a real content type mapped to a real event ([custom-agui-events.md](custom-agui-events.md)). Text-smuggling is what is left when the seam exists in one direction only.
 
 ### Flow
 
-```
-┌────────── Frontend (chat.component.ts) ──────────┐
-│ 1. User picks files → POST /agents/files          │  multipart upload
-│    ← [{ fileId, fileName }]                        │
-│ 2. Pending chips shown in composer                 │
-│ 3. On send:                                        │
-│    - local message keeps CLEAN text + attachments  │  (no marker shown in UI)
-│    - wire payload = text + "\n[[agui-attachments:  │
-│      <id1>,<id2>]]"                                 │
-└────────────────────────┬───────────────────────────┘
-                         │ AG-UI (text survives the text-only conversion)
-┌────────────────────────▼─── Backend ──────────────────────────────┐
-│ 4. AttachmentResolutionMiddleware (runs BEFORE the model call AND   │
-│    before history is persisted):                                    │
-│    - strips the marker from the user TextContent                    │
-│    - appends model-visible "\n[Attached files: a.pdf, b.png]"       │
-│    - resolves each fileId via IUploadedFileStore and writes the     │
-│      paths into ChatMessage.AdditionalProperties["attachments"]     │
-│ 5. Model sees: text + filename line (NO path, NO marker)            │
-│ 6. History persists: filename text + paths in AdditionalProperties  │
-│    (AdditionalProperties is not forwarded to the model)             │
-└─────────────────────────────────────────────────────────────────────┘
-```
+**Frontend** ([chat.component.ts](frontend/src/app/chat.component.ts)): files picked → `POST /agents/files` (multipart) → `[{ fileId, fileName }]`; pending chips in the composer; on send the local message keeps **clean** text plus its attachments (the UI never shows a marker) while the wire payload is `text + "\n[[agui-attachments:<id1>,<id2>]]"` — text, so it survives the text-only conversion.
 
-### Why this satisfies the "path hidden from model" requirement
+**Backend**: [`AttachmentResolutionMiddleware`](backend/AttachmentResolutionMiddleware.cs) runs **before the model call and before history is persisted**: it strips the marker from the user `TextContent`, appends a model-visible `"\n[Attached files: a.pdf, b.png]"`, resolves each `fileId` via `IUploadedFileStore`, and writes the paths into `ChatMessage.AdditionalProperties["attachments"]`. The model sees text plus the filename line (no path, no marker); history persists that text plus the paths.
 
-Builder middleware wraps **outside** the inner `ChatClientAgent` that owns the `ChatHistoryProvider`. The middleware mutates the user message before calling the inner agent, so the **same** message instance flows to both:
-
-- the **model call** — which only serializes known content (the filename text); `ChatMessage.AdditionalProperties` is metadata and is not sent to the model, and
-- the **history provider** — which persists `RequestMessages` (including `AdditionalProperties` with the paths) via plain `System.Text.Json`.
+One edit serves both consumers because builder middleware wraps **outside** the inner `ChatClientAgent` that owns the `ChatHistoryProvider`: the **same** mutated instance reaches the model call — which serializes only known content, `ChatMessage.AdditionalProperties` being metadata that is not forwarded — and the history provider, which persists `RequestMessages` via plain `System.Text.Json`.
 
 ### Marker format
 
-```
-\n[[agui-attachments:<fileId1>,<fileId2>,...]]
-```
+`\n[[agui-attachments:<fileId1>,<fileId2>,...]]`, matched end-anchored by the backend regex `@"\n?\[\[agui-attachments:([^\]]*)\]\]\s*$"`; the leading newline is optional.
 
-Matched end-anchored by the backend regex `@"\n?\[\[agui-attachments:([^\]]*)\]\]\s*$"`. The leading newline is optional. The local frontend view model never contains the marker — only the wire payload does — so the UI shows clean text plus chips.
+## Storage
 
-### Storage
-
-- Files are saved under `backend/UploadedFiles/` as `{guid}` (the GUID is the only path segment — the original filename is never used as a path, preventing traversal).
-- A metadata index `UploadedFiles/_index.json` maps `fileId → { storagePath, originalFileName, contentType }`, so downloads and history path-resolution survive a backend restart.
+- Files are saved under `backend/UploadedFiles/` as `{guid}` — the GUID is the only path segment, so the original filename is never used as a path, preventing traversal.
+- The metadata index `UploadedFiles/_index.json` lets downloads and history path-resolution survive a backend restart. On disk it is a JSON **array** of `{ "FileId", "StoragePath", "OriginalFileName", "ContentType" }` — PascalCase, because `UploadedFileStore` serializes `index.Values.ToList()` with no naming policy; the `fileId → info` dictionary is the in-memory shape only, rebuilt from the array on load by keying each entry on its own `FileId`.
 - `UploadedFiles/` is gitignored.
 
 ## Files
 
 | File | Role |
 |------|------|
-| [backend/UploadedFileStore.cs](backend/UploadedFileStore.cs) | `IUploadedFileStore` singleton; saves bytes + persists the metadata index. |
+| [backend/UploadedFileStore.cs](backend/UploadedFileStore.cs) | `IUploadedFileStore` singleton; saves bytes, persists the metadata index. |
 | [backend/FileEndpoints.cs](backend/FileEndpoints.cs) | `POST /agents/files` (multipart, multiple, 50 MB cap) and `GET /agents/files/{fileId}` (streamed download). Under `/agents/*` so the dev proxy forwards them. |
-| [backend/AttachmentResolutionMiddleware.cs](backend/AttachmentResolutionMiddleware.cs) | Strips the marker, appends the model-visible filename line, stashes paths in `AdditionalProperties`. |
-| [backend/Program.cs](backend/Program.cs) | Registers the store, maps the endpoints, inserts the middleware first in `CreateAgent()`. |
-| [frontend/src/app/chat.component.ts](frontend/src/app/chat.component.ts) | File picker, upload, pending chips, marker injection on send, attachment chip rendering. |
+| [backend/AttachmentResolutionMiddleware.cs](backend/AttachmentResolutionMiddleware.cs) | Marker → model-visible filename line + paths in `AdditionalProperties` (see [Flow](#flow)). |
+| [backend/Program.cs](backend/Program.cs) | Registers the store, maps the endpoints, adds `.UseAttachmentResolution(fileStore)` to the `CreateAgent()` chain — below the two tool-approval links, above everything that reads the message text. |
+| [frontend/src/app/chat.component.ts](frontend/src/app/chat.component.ts) | Picker, upload, pending chips, marker injection on send, chip rendering. |
+| [tests/AttachmentResolutionMiddlewareTests.cs](tests/AttachmentResolutionMiddlewareTests.cs) | The middleware, including a data-leak guard: the model-visible text carries filenames only, never the storage path. |
 
 ## Gotchas / things we learned
 
-- **The incoming `messages` is a lazy iterator** (AG-UI's `AsChatMessages` yields). A middleware that **mutates messages in place must materialize first** (`messages.ToList()`) and forward the same list — otherwise `next(messages)` re-enumerates the lazy source, rebuilds fresh `ChatMessage` instances, and discards the mutation. (Adding/prepending a message, as `StateSnapshotMiddleware` does, is immune; in-place mutation is not.) This caused a silent failure where the raw marker ended up persisted and sent to the model.
-- **Downloads are served as `Content-Disposition: attachment`** so nothing renders/executes inline.
-- **`GET /agents/files/{fileId}` only ever uses `fileId` as a dictionary key** — the served path comes from the GUID-derived store value, never from the URL.
+- **A middleware that mutates messages in place must materialize first** (`messages.ToList()`) and forward that same list — the instances continuing down the pipeline have to be the ones that were edited, or a lazy re-enumeration rebuilds fresh `ChatMessage` objects and silently discards the edit, which is how the raw marker once ended up both persisted and sent to the model. The AG-UI server SDK already hands over a `List` (`RunAgentInputExtensions.ToChatRequestContext` calls `AsChatMessages(...).ToList()`), so materializing is insurance against the caller, not a fix for a live bug. (Adding or prepending a message, as `StateSnapshotMiddleware` does, is immune either way; in-place mutation is not.)
+- Downloads are served as `Content-Disposition: attachment`, so nothing renders or executes inline.
+- `GET /agents/files/{fileId}` only ever uses `fileId` as a dictionary key — the served path comes from the GUID-derived store value, never from the URL.
 
 ## Migration path (when the .NET AG-UI SDK supports `InputContent[]`)
 
-Once `AsChatMessages` preserves structured content parts:
-
-1. Replace the text marker with a real `DocumentInputPart` whose source is an `InputContentUrlSource` pointing at the existing `GET /agents/files/{fileId}` endpoint.
-2. Update `AttachmentResolutionMiddleware` to read that structured part instead of parsing the marker.
-3. The backend file store and download endpoint stay exactly as-is.
-
-Re-check [#126](https://github.com/ag-ui-protocol/ag-ui/issues/126) for when this lands.
+Once `AsChatMessages` preserves structured content parts: replace the text marker with a real `DocumentInputPart` whose source is an `InputContentUrlSource` pointing at the existing `GET /agents/files/{fileId}` endpoint, and update `AttachmentResolutionMiddleware` to read that part instead of parsing the marker. The backend file store and download endpoint stay exactly as-is. Re-check [#126](https://github.com/ag-ui-protocol/ag-ui/issues/126) for when this lands.

@@ -1,6 +1,4 @@
 using System.Runtime.CompilerServices;
-using System.Text;
-using System.Text.Json;
 using EUAIActClassifier;
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
@@ -16,23 +14,14 @@ namespace AgenticTodos.Backend;
 /// The classification agent classifies the completed turn once per run and emits its
 /// <see cref="Classification"/> on a trailing side-channel <see cref="AgentResponseUpdate"/>; we read it
 /// here via the supported, key-agnostic <c>update.EUAIActClassification</c> getter (EUAIActClassifier
-/// ≥ 0.0.2). When the risk warrants it, we emit a <see cref="DataContent"/> marker with the dedicated MIME
-/// <see cref="ActivityMediaType"/> so the AGUI framework routes it through a
-/// <c>TEXT_MESSAGE_CONTENT</c> event; <see cref="EUAIActRiskActivityInjector"/> then rewrites that
-/// into an <c>ACTIVITY_SNAPSHOT</c> (<c>activityType: "eu-ai-act-risk"</c>) before the client sees it.
+/// ≥ 0.0.2). When the risk warrants it, we emit an <see cref="EUAIActRiskActivityContent"/>, which the
+/// mapping registered in <see cref="AGUIEndpoint.CreateStreamOptions"/> turns into an
+/// <c>ACTIVITY_SNAPSHOT</c> (<c>activityType: "eu-ai-act-risk"</c>).
 /// Mirrors <see cref="DetectMcpAppsActivityMiddleware"/>.
 /// </para>
 /// </summary>
 internal static class EUAIActRiskActivityMiddleware
 {
-    /// <summary>
-    /// MIME type of the emitted marker. Any media type other than <c>application/json</c>
-    /// (→ <c>STATE_SNAPSHOT</c>) and <c>application/json-patch+json</c> (→ <c>STATE_DELTA</c>) makes the
-    /// AGUI framework route the <see cref="DataContent"/> through a <c>TEXT_MESSAGE_CONTENT</c> event;
-    /// a dedicated type (rather than reusing the MCP-apps one) keeps the two activity kinds distinct.
-    /// </summary>
-    private const string ActivityMediaType = "application/x-eu-ai-act-activity";
-
     extension(AIAgentBuilder agentBuilder)
     {
         public AIAgentBuilder UseEUAIActRiskActivity() => agentBuilder.Use(runFunc: RunAsync, runStreamingFunc: RunStreamingAsync);
@@ -56,8 +45,7 @@ internal static class EUAIActRiskActivityMiddleware
     {
         var emitted = false;
 
-        await foreach (var update in innerAgent.RunStreamingAsync(messages, session, options, cancellationToken)
-                           .ConfigureAwait(false))
+        await foreach (var update in innerAgent.RunStreamingAsync(messages, session, options, cancellationToken))
         {
             yield return update;
 
@@ -75,25 +63,17 @@ internal static class EUAIActRiskActivityMiddleware
 
             emitted = true;
 
-            var activityJson = BuildActivityJson(
-                messageId: Guid.NewGuid().ToString("N"),
-                classification: classification);
-
-            // Routes through TEXT_MESSAGE_CONTENT (not STATE_SNAPSHOT); EUAIActRiskActivityInjector
-            // replaces it with ACTIVITY_SNAPSHOT before the client sees it.
             yield return new AgentResponseUpdate
             {
-                Contents = [new DataContent(Encoding.UTF8.GetBytes(activityJson), ActivityMediaType)]
+                Contents =
+                [
+                    new EUAIActRiskActivityContent(
+                        messageId: Guid.NewGuid().ToString("N"),
+                        risk: classification.Risk.ToString(),
+                        category: classification.Category ?? string.Empty,
+                        reason: classification.Reason ?? string.Empty)
+                ]
             };
         }
-    }
-
-    private static string BuildActivityJson(string messageId, Classification classification)
-    {
-        string encodedMsgId = JsonSerializer.Serialize(messageId);
-        string encodedRisk = JsonSerializer.Serialize(classification.Risk.ToString());
-        string encodedCategory = JsonSerializer.Serialize(classification.Category ?? string.Empty);
-        string encodedReason = JsonSerializer.Serialize(classification.Reason ?? string.Empty);
-        return $$"""{"type":"eu-ai-act-activity","messageId":{{encodedMsgId}},"risk":{{encodedRisk}},"category":{{encodedCategory}},"reason":{{encodedReason}}}""";
     }
 }

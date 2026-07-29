@@ -13,12 +13,17 @@ namespace AgenticTodos.Backend;
 /// Because this runs outside the inner <c>ChatClientAgent</c> (which owns the ChatHistoryProvider), the same
 /// mutated message flows to BOTH the model call and persistence: the model sees only the filenames, while the
 /// persisted history keeps the storage paths (AdditionalProperties is not forwarded to the model).
-///
-/// Mirrors the marker-in-text idiom used by <see cref="DetectMcpAppsActivityMiddleware"/>.
 /// </summary>
-public static class AttachmentResolutionMiddleware
+internal static class AttachmentResolutionMiddleware
 {
     public const string AdditionalPropertiesKey = "attachments";
+
+    extension(AIAgentBuilder agentBuilder)
+    {
+        public AIAgentBuilder UseAttachmentResolution(IUploadedFileStore store) =>
+            agentBuilder.Use(sharedFunc: (messages, session, options, next, cancellationToken) =>
+                Invoke(messages, session, options, next, cancellationToken, store));
+    }
 
     // End-anchored marker, e.g. "\n[[agui-attachments:abc,def]]". The leading newline is optional so the
     // regex is tolerant of how the frontend assembles the wire content.
@@ -28,7 +33,7 @@ public static class AttachmentResolutionMiddleware
 
     public sealed record AttachmentRecord(string FileId, string FileName, string StoragePath, string ContentType);
 
-    public static Task Invoke(
+    internal static Task Invoke(
         IEnumerable<ChatMessage> messages,
         AgentSession? session,
         AgentRunOptions? options,
@@ -36,9 +41,13 @@ public static class AttachmentResolutionMiddleware
         CancellationToken cancellationToken,
         IUploadedFileStore store)
     {
-        // Materialize once: the incoming sequence is a lazy iterator (AG-UI's AsChatMessages yields).
-        // We must mutate and forward the SAME instances — re-enumerating the lazy source would rebuild
-        // fresh ChatMessage objects and discard our mutations.
+        // The mutation below has to reach the SAME ChatMessage instances that continue down the
+        // pipeline, because that is what makes one edit serve two consumers: the model call sees the
+        // rewritten text, and ChatHistoryProvider persists the AdditionalProperties off the very same
+        // object. Materializing keeps that true no matter what the caller handed in — today the AG-UI
+        // server SDK already passes a List (RunAgentInputExtensions.ToChatRequestContext calls
+        // AsChatMessages(...).ToList()), but a lazy source would rebuild fresh instances per
+        // enumeration and silently drop the edits.
         var materialized = messages.ToList();
 
         foreach (var message in materialized)

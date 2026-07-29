@@ -1,9 +1,25 @@
 using System.Text.Json;
-using AgenticTodos.Backend;
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
 
-public class FileSystemChatHistoryProvider : IOChatHistoryProvider
+namespace AgenticTodos.Backend;
+
+/// <summary>
+/// One JSON file per conversation under <c>ChatHistories</c>, named after the store id the base class
+/// keeps in the session.
+/// </summary>
+/// <remarks>
+/// The <see cref="JsonSerializer"/> calls pass no options, so persistence uses the ambient defaults
+/// rather than <see cref="AIJsonUtilities.DefaultOptions"/>. Every content type this app persists
+/// round-trips the same either way, and switching would not close the closed-polymorphism trap
+/// <see cref="LoggingMiddleware"/> has to work around: the <c>[JsonPolymorphic]</c> set is declared on
+/// <see cref="AIContent"/> itself, so an unregistered subtype fails under both. What it would change is
+/// the shape of everything written from then on — <see cref="AIJsonUtilities.DefaultOptions"/> is
+/// web-flavoured (camelCase, case-insensitive reads), the ambient default neither — and that is close to
+/// a one-way door: it would still read the PascalCase files already on disk, but nothing would read its
+/// own output back if the switch were reverted.
+/// </remarks>
+internal class FileSystemChatHistoryProvider : IOChatHistoryProvider
 {
     private readonly string pathBase;
 
@@ -15,7 +31,6 @@ public class FileSystemChatHistoryProvider : IOChatHistoryProvider
         : base(reducer, stateInitializer, stateKey)
     {
         this.pathBase = pathBase;
-
     }
 
     protected async override Task<T?> Read<T>(string filePath) where T : class
@@ -38,7 +53,7 @@ public class FileSystemChatHistoryProvider : IOChatHistoryProvider
     }
 }
 
-public abstract class IOChatHistoryProvider : ChatHistoryProvider
+internal abstract class IOChatHistoryProvider : ChatHistoryProvider
 {
     private readonly IChatReducer? reducer;
     private readonly ProviderSessionState<State> sessionState;
@@ -82,7 +97,13 @@ public abstract class IOChatHistoryProvider : ChatHistoryProvider
     {
         var state = this.sessionState.GetOrInitializeState(context.Session);
 
-        var newMessages = context.RequestMessages.Concat(context.ResponseMessages ?? []).ToList();
+        // Per-turn context injected by a middleware above the agent (the conversation state snapshot)
+        // arrives in RequestMessages but must not become part of the transcript — see
+        // TransientChatMessages for why persisting it corrupts every later turn.
+        var newMessages = context.RequestMessages
+            .Concat(context.ResponseMessages ?? [])
+            .Where(message => !message.IsTransient())
+            .ToList();
 
         var fullFilePath = $"{state.StoreId}_full.json";
         var loaded = await Read<List<ChatMessage>>(fullFilePath);

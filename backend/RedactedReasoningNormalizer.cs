@@ -17,7 +17,7 @@ namespace AgenticTodos.Backend;
 /// Normal (non-redacted) thinking is unaffected: its signature lives in the plain
 /// <see cref="TextReasoningContent.ProtectedData"/> string, which round-trips verbatim.
 /// </summary>
-public static class RedactedReasoningNormalizer
+internal static class RedactedReasoningNormalizer
 {
     private const string RedactedContentKey = "RedactedContent";
 

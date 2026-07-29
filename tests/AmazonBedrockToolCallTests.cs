@@ -3,14 +3,13 @@ using System.Text.Json;
 using AgenticTodos.Backend;
 using Amazon.BedrockRuntime;
 using Microsoft.Extensions.AI;
-using Microsoft.Extensions.Configuration;
 using Xunit.Abstractions;
 
 namespace AgenticTodos.Tests;
 
-public class AmazonBedrockToolCallTest(ITestOutputHelper output)
+public class AmazonBedrockToolCallTests(ITestOutputHelper output)
 {
-    [Fact]
+    [LiveLlmFact(LiveLlmKeys.BedrockAccessKeyId, LiveLlmKeys.BedrockSecretAccessKey, LiveLlmKeys.BedrockRegion)]
     public async Task AgentWithTwoToolCalls()
     {
         using IChatClient client = NewChatClient().Build();
@@ -53,7 +52,7 @@ public class AmazonBedrockToolCallTest(ITestOutputHelper output)
         Assert.Contains("change_background_color", toolCalls);
     }
 
-    [Fact]
+    [LiveLlmFact(LiveLlmKeys.BedrockAccessKeyId, LiveLlmKeys.BedrockSecretAccessKey, LiveLlmKeys.BedrockRegion)]
     public async Task ChatWithTwoSeparatedToolCallsConsolidatesThem()
     {
         using IChatClient client = NewChatClient()
@@ -104,15 +103,15 @@ public class AmazonBedrockToolCallTest(ITestOutputHelper output)
 
     private static ChatClientBuilder NewChatClient()
     {
-        var config = new ConfigurationBuilder()
-            .AddJsonFile("appsettings.json")
-            .AddUserSecrets("99db47a8-e571-40ad-829f-0733c2f6e62b")
-            .Build();
+        // LiveLlmConfiguration, not a builder of this test's own: the [LiveLlmFact] guard admits the test
+        // by reading exactly this, so a second set of sources here is how a test gets past the guard and
+        // then fails on the very credential the guard reported as present.
+        var config = LiveLlmConfiguration.Instance;
 
         var runtime = new AmazonBedrockRuntimeClient(
-            awsAccessKeyId: config["AWSBedrockAccessKeyId"]!,
-            awsSecretAccessKey: config["AWSBedrockSecretAccessKey"]!,
-            region: Amazon.RegionEndpoint.GetBySystemName(config["AWSBedrockRegion"]!));
+            awsAccessKeyId: config[LiveLlmKeys.BedrockAccessKeyId]!,
+            awsSecretAccessKey: config[LiveLlmKeys.BedrockSecretAccessKey]!,
+            region: Amazon.RegionEndpoint.GetBySystemName(config[LiveLlmKeys.BedrockRegion]!));
 
         var client = runtime
             .AsIChatClient("eu.anthropic.claude-sonnet-4-20250514-v1:0")

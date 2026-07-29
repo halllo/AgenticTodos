@@ -1,5 +1,4 @@
-#pragma warning disable MEAI001, MAAI001 // Tool approval types are experimental
-
+using AGUI.Abstractions;
 using AgenticTodos.Backend;
 using Amazon.BedrockRuntime;
 using EUAIActClassifier;
@@ -14,8 +13,9 @@ var builder = WebApplication.CreateBuilder(args);
 
 OpenTelemetryExtensions.ConfigureOpenTelemetry(builder);
 builder.Services.AddOpenApi();
-builder.Services.AddAGUI();
-builder.Services.AddControllers();
+builder.Services.AddAGUIServer();
+// The app's own AG-UI content types, on the endpoint's JsonSerializerOptions — see AddAGUIJson.
+builder.Services.AddAGUIJson();
 
 builder.Services.AddSingleton(_ =>
     new Lazy<Task<AIFunction[]>>(() => GetTools(builder.Configuration)));
@@ -45,6 +45,9 @@ builder.Services.AddKeyedSingleton("agentAliases", builder.Services
     .OrderBy(key => key)
     .ToList());
 builder.Services.AddScoped<IAgentProvider, AgentProvider>();
+// The store the app actually uses. Its lifetime is free to change — AddAGUISessionStore() puts a
+// forwarding stand-in between it and the endpoint, which resolves it per request; the endpoint itself
+// could only ever hold a singleton.
 builder.Services.AddSingleton<AgentSessionStore, FileSystemSessionStore>();
 builder.Services.AddSingleton<IUploadedFileStore, UploadedFileStore>();
 builder.Services.AddAGUISessionStore();
@@ -59,7 +62,7 @@ app.MapOpenApi();
 app.MapScalarApiReference();
 app.MapGet("/", () => "Hello Agents!");
 app.MapGet("/ping", () => Results.Ok());
-app.MapGet("/agents", (IAgentProvider agents) => agents.GetAliases());
+app.MapGet("/agents", async (IAgentProvider agents, CancellationToken ct) => await agents.GetAliasesAsync(ct));
 app.MapFileEndpoints();
 
 // CSP headers for the outer sandbox iframe — built dynamically from the ?csp= query param
@@ -75,14 +78,10 @@ app.Use(async (ctx, next) =>
 });
 app.UseStaticFiles();
 
-// Inject unsupported AGUI events for endpoints ending with "/agui"
-app.UseWhen(
-    ctx => ctx.Request.Path.Value?.EndsWith("/agui", StringComparison.OrdinalIgnoreCase) == true,
-    branch => branch.UseMiddleware<ActivitySnapshotInjectionMiddleware>()
-);
-
 // Transparent HTTP proxy that forwards MCP Streamable HTTP traffic to the MCP server.
-// Must be registered BEFORE MapAGUIViaHttpRoutingAgent, which intercepts all /agents/* paths.
+// A terminal app.Use() branch rather than a mapped endpoint: the MCP Streamable HTTP transport needs
+// GET (SSE) as well as POST on this path, and an endpoint under /agents answered GET with 405.
+// Middleware short-circuits before endpoint execution, so it cannot collide with the AG-UI endpoint.
 app.Use(async (HttpContext ctx, RequestDelegate next) =>
 {
     if (!ctx.Request.Path.StartsWithSegments("/agents/mcp-relay"))
@@ -121,33 +120,18 @@ app.Use(async (HttpContext ctx, RequestDelegate next) =>
     await response.Content.CopyToAsync(ctx.Response.Body, ctx.RequestAborted);
 });
 
-// Singleton agents with official AGUI endpoints
-// app.MapAGUI("/agents/static/openai/agui", CreateAgent(
-//     chatClient: OpenAI(builder.Configuration, builder.Environment.ApplicationName),
-//     tools: tools,
-//     services: app.Services))
-//     .AddOpenApiOperationTransformer((operation, context, ct) =>
-//     {
-//         operation.Deprecated = true; // no session management
-//         return Task.CompletedTask;
-//     })
-//     ;
-// app.MapAGUI("/agents/static/amazonbedrock/agui", CreateAgent(
-//     chatClient: AmazonBedrock(builder.Configuration, app.Services),
-//     tools: tools,
-//     services: app.Services))
-//     .AddOpenApiOperationTransformer((operation, context, ct) =>
-//     {
-//         operation.Deprecated = true; // no session management
-//         return Task.CompletedTask;
-//     })
-//     ;
+// This app once also mapped one static AG-UI endpoint per agent (/agents/static/{alias}/agui). They
+// were dropped for having no session management, and the API they used is gone with the discontinued
+// Microsoft.Agents.AI.AGUI package: the hosting package offers MapAGUIServer only.
+
+// A failure inside an AG-UI request has to reach the client as RUN_STARTED + RUN_ERROR; an HTTP 500
+// with a non-SSE body is invisible to every AG-UI client. Registered before the endpoint mapping so
+// the catch surrounds endpoint execution. The prefix comes from AGUIEndpoint so it cannot drift away
+// from the route the endpoint is actually mapped on.
+app.UseAguiRunErrorStream(AGUIEndpoint.RoutedPathPrefix);
 
 // Routing agent (suggested workaround)
 app.MapAGUIViaHttpRoutingAgent();
-
-// Reflection agents (self-made)
-app.MapControllers();
 
 app.Run();
 
@@ -184,16 +168,18 @@ static IChatClient AmazonBedrock(IConfiguration configuration, IServiceProvider 
         // {
         //     c.AllowMultipleToolCalls = false; // does not seem to have any effect
         // })
+        // Two app-internal objects ride on ChatOptions.AdditionalProperties by the time a request
+        // reaches the provider: the whole RunAgentInput (stashed by the AG-UI server SDK under an
+        // internal key, hence the match by value type) and this app's ConversationState (published for
+        // tools by StateSnapshotMiddleware, then copied into ChatOptions by ChatClientAgent). Neither
+        // belongs in a model request — an adapter that forwards AdditionalProperties as
+        // AdditionalModelRequestFields makes Claude reject the call with "Extra inputs are not
+        // permitted". AWSSDK.Extensions.Bedrock.MEAI 4.0.101.7 happens not to read AdditionalProperties
+        // at all, so today this is defence-in-depth rather than load-bearing.
         .Use(client => new OmitAdditionalPropertiesMiddleware(
             inner: client,
-            propertyKeysToOmit: [ //prevent the "Extra inputs are not permitted" error
-                "ag_ui_thread_id",
-                "ag_ui_run_id",
-                "ag_ui_state",
-                "ag_ui_context",
-                "ag_ui_forwarded_properties"
-            ]))
-        .Use((client, services) => new ConsolidateToolResultsMiddleware(inner: client))
+            propertyValueTypesToOmit: [typeof(RunAgentInput), typeof(StateSnapshotMiddleware.ConversationState)]))
+        .Use(client => new ConsolidateToolResultsMiddleware(inner: client))
         .Use((client, services) => new LoggingMiddleware(inner: client, logger: services.GetRequiredService<ILogger<LoggingMiddleware>>()))
         .Build(services)
         ;
@@ -214,29 +200,28 @@ static AIAgent CreateAgent(IChatClient chatClient, AIFunction[] tools, IServiceP
                     Reasoning = reasoning,
                     MaxOutputTokens = maxOutputTokens,
                 },
-                ChatHistoryProvider = new FileSystemChatHistoryProvider(), // DevUI uses InMemoryResponsesService, which stores/loads directly with IConversationStorage.
+                // History lives behind ChatHistoryProvider rather than an IConversationStorage: the
+                // provider seam is the one ChatClientAgent consults on every run, and it is where this
+                // app's two history repairs hook in (see FileSystemChatHistoryProvider).
+                ChatHistoryProvider = new FileSystemChatHistoryProvider(),
                 AIContextProviders = [],
-                // Approval escalation is all-or-nothing: when any tool call in a model response
-                // requires approval, FunctionInvokingChatClient converts ALL calls in that response
-                // to approval requests — including client-side (WebMCP) tools. This flag injects a
-                // decorator that auto-approves the non-gated ones via the session state, so only
-                // genuinely gated tools prompt the user.
-                EnableNonApprovalRequiredFunctionBypassing = true,
             },
             services: services)
         .AsBuilder()
         .UseOpenTelemetry(sourceName: applicationName, configure: c => c.EnableSensitiveData = true)
-        // Order matters: the bridge (outer) translates approval content to/from the AG-UI wire
-        // format; ToolApprovalAgent (inner) applies "always allow" rules and queues multi-approval
-        // batches, persisting ToolApprovalState in the session.
-        .UseToolApprovalBridge()
+        // Order matters: the interrupt middleware (outer) translates approval content to/from the
+        // AG-UI interrupt/resume wire format; ToolApprovalAgent (inner) applies "always allow" rules
+        // and queues multi-approval batches, persisting ToolApprovalState in the session.
+        .UseToolApprovalInterrupts()
         .UseToolApproval(new ToolApprovalAgentOptions())
-        .Use(sharedFunc: (messages, session, options, next, ct) =>
-            AttachmentResolutionMiddleware.Invoke(messages, session, options, next, ct, fileStore))
-        .Use(sharedFunc: OmitEmptySystemMessagesMiddleware.Invoke)
-        .Use(runFunc: StateSnapshotMiddleware.RunAsync, runStreamingFunc: StateSnapshotMiddleware.RunStreamingAsync)
+        .UseAttachmentResolution(fileStore)
+        .UseOmitEmptyMessages()
+        .UseStateSnapshot()
         .UseDetectMcpAppsActivity()
         .UseEUAIActRiskActivity()
+        // No caller passes a classifier today — both keyed registrations omit it — so classification
+        // runs on the agent's own client. The parameter stays as the seam for pointing it at a cheaper
+        // model: it is the one step in the pipeline that has no need of the conversational model.
         .Use(inner => inner.UseEUAIActClassification(classifier ?? chatClient))
         .Build(services);
 }
@@ -272,7 +257,9 @@ static async Task<AIFunction[]> GetTools(IConfiguration configuration)
                 var loggerFactory = services.GetRequiredService<ILoggerFactory>();
                 var logger = loggerFactory.CreateLogger("IncrementCounterFunction");
 
-                var state = AIAgent.CurrentRunContext?.RunOptions?.AdditionalProperties?["my_state"] as StateSnapshotMiddleware.ConversationState;
+                // TryGetState, not a direct index: AdditionalPropertiesDictionary's indexer throws on a
+                // missing key, and a run that carried no state has none.
+                StateSnapshotMiddleware.TryGetState(AIAgent.CurrentRunContext?.RunOptions, out var state);
                 if (state != null)
                 {
                     state.Counter++;

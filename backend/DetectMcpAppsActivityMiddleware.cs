@@ -8,11 +8,10 @@ using ModelContextProtocol.Client;
 namespace AgenticTodos.Backend;
 
 /// <summary>
-/// Agent-level streaming middleware that emits a <see cref="DataContent"/> marker immediately
+/// Agent-level streaming middleware that emits an <see cref="McpAppActivityContent"/> immediately
 /// after each <see cref="FunctionResultContent"/> whose tool has a registered <c>ui.resourceUri</c>.
-/// Uses MIME type <c>application/x-mcp-activity</c> so the AGUI framework converts it to a
-/// <c>TEXT_MESSAGE_CONTENT</c> SSE event (not <c>STATE_SNAPSHOT</c>), which
-/// <see cref="SseEventInjectionMiddleware"/> then detects and replaces with <c>ACTIVITY_SNAPSHOT</c>.
+/// The mapping registered in <see cref="AGUIEndpoint.CreateStreamOptions"/> turns it into an AG-UI
+/// <c>ACTIVITY_SNAPSHOT</c> event.
 /// </summary>
 internal static class DetectMcpAppsActivityMiddleware
 {
@@ -39,8 +38,7 @@ internal static class DetectMcpAppsActivityMiddleware
     {
         var callIdToInfo = new Dictionary<string, (string ToolName, string ArgsJson)>(StringComparer.Ordinal);
 
-        await foreach (var update in innerAgent.RunStreamingAsync(messages, session, options, cancellationToken)
-                           .ConfigureAwait(false))
+        await foreach (var update in innerAgent.RunStreamingAsync(messages, session, options, cancellationToken))
         {
             foreach (var fcc in update.Contents.OfType<FunctionCallContent>())
             {
@@ -70,37 +68,45 @@ internal static class DetectMcpAppsActivityMiddleware
                 var resultJson = SerializeResult(frc.Result);
                 var normalizedResult = NormalizeToolResult(resultJson);
 
-                var activityJson = BuildActivityJson(
-                    messageId: Guid.NewGuid().ToString("N"),
-                    resourceUri: resourceUri,
-                    normalizedResult: normalizedResult,
-                    toolInputJson: info.ArgsJson);
-
-                // Use application/x-mcp-activity so the AGUI framework routes this through
-                // TextMessageContentEvent (not StateSnapshotEvent), keeping it out of the
-                // state-snapshot pathway. SseEventInjectionMiddleware replaces it with
-                // ACTIVITY_SNAPSHOT before the client sees it.
                 yield return new AgentResponseUpdate
                 {
-                    Contents = [new DataContent(Encoding.UTF8.GetBytes(activityJson), "application/x-mcp-activity")]
+                    Contents =
+                    [
+                        new McpAppActivityContent(
+                            // The tool call id, not a fresh GUID: the activity identifies that call, so
+                            // re-emitting it replaces the rendered app (which is what Replace = true
+                            // promises) instead of stacking a second card for the same result.
+                            messageId: frc.CallId,
+                            resourceUri: resourceUri,
+                            result: ParseOrEmptyObject(normalizedResult),
+                            toolInput: ParseOrEmptyObject(info.ArgsJson))
+                    ]
                 };
             }
         }
     }
 
-    private static string BuildActivityJson(
-        string messageId, string resourceUri, string normalizedResult, string toolInputJson)
+    private static JsonElement ParseOrEmptyObject(string json)
     {
-        string encodedMsgId = JsonSerializer.Serialize(messageId);
-        string encodedUri = JsonSerializer.Serialize(resourceUri);
-        return $$"""{"type":"mcp-activity","messageId":{{encodedMsgId}},"resourceUri":{{encodedUri}},"result":{{normalizedResult}},"toolInput":{{toolInputJson}}}""";
+        try
+        {
+            using var doc = JsonDocument.Parse(json);
+            return doc.RootElement.Clone();
+        }
+        catch (JsonException)
+        {
+            return s_emptyObject;
+        }
     }
+
+    private static readonly JsonElement s_emptyObject = JsonDocument.Parse("{}").RootElement.Clone();
 
     private static string SerializeResult(object? result) => result switch
     {
         null => string.Empty,
         string str => str,
-        TextContent tc => JsonSerializer.Serialize(tc.Text ?? string.Empty),
+        // No null guard on Text: its getter substitutes string.Empty for a null backing field.
+        TextContent tc => JsonSerializer.Serialize(tc.Text),
         JsonElement el => el.GetRawText(),
         _ => JsonSerializer.Serialize(result),
     };
@@ -166,7 +172,7 @@ internal static class DetectMcpAppsActivityMiddleware
                 return $$"""{"content":[{"type":"text","text":{{JsonSerializer.Serialize(text)}}}]}""";
             }
 
-            // JSON string — SerializeResultContent encodes string/TextContent results this way.
+            // JSON string — SerializeResult encodes string/TextContent results this way.
             if (root.ValueKind == JsonValueKind.String)
                 return $$"""{"content":[{"type":"text","text":{{raw}}}]}""";
         }

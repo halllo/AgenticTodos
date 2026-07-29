@@ -18,21 +18,29 @@
   </ItemGroup>
 
   <ItemGroup>
-    <PackageReference Include="AWSSDK.Extensions.Bedrock.MEAI" Version="4.0.101.3" />
-    <PackageReference Include="EUAIActClassifier" Version="0.0.3" />
-    <PackageReference Include="Microsoft.Agents.AI.AGUI" Version="1.13.0-preview.260703.1" />
-    <PackageReference Include="Microsoft.Agents.AI.DevUI" Version="1.13.0-preview.260703.1" />
-    <PackageReference Include="Microsoft.Agents.AI.Hosting.AGUI.AspNetCore" Version="1.13.0-preview.260703.1" />
-    <PackageReference Include="Microsoft.Agents.AI.OpenAI" Version="1.13.0" />
-    <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.9" />
-    <PackageReference Include="Microsoft.Extensions.AI" Version="10.7.0" />
-    <PackageReference Include="ModelContextProtocol.AspNetCore" Version="1.4.1" />
-    <PackageReference Include="Scalar.AspNetCore" Version="2.16.11" />
-    <PackageReference Include="OpenTelemetry.Exporter.OpenTelemetryProtocol" Version="1.16.0" />
-	  <PackageReference Include="OpenTelemetry.Extensions.Hosting" Version="1.16.0" />
-	  <PackageReference Include="OpenTelemetry.Instrumentation.AspNetCore" Version="1.16.0" />
-	  <PackageReference Include="OpenTelemetry.Instrumentation.Http" Version="1.16.0" />
-	  <PackageReference Include="OpenTelemetry.Instrumentation.Runtime" Version="1.16.0" />
+    <PackageReference Include="AWSSDK.Extensions.Bedrock.MEAI" Version="4.0.101.7" />
+    <PackageReference Include="EUAIActClassifier" Version="0.0.4" />
+    <!-- AG-UI protocol + server SDK. Microsoft.Agents.AI.Hosting.AGUI.AspNetCore builds on these
+         (they replaced the discontinued Microsoft.Agents.AI.AGUI package); referenced explicitly
+         because the app maps its own content onto protocol events. Pinned to the versions the
+         hosting package itself resolves. -->
+    <PackageReference Include="AGUI.Abstractions" Version="0.0.3" />
+    <PackageReference Include="AGUI.Server" Version="0.0.3" />
+    <PackageReference Include="Microsoft.Agents.AI.Hosting.AGUI.AspNetCore" Version="1.15.0-preview.260722.1" />
+    <PackageReference Include="Microsoft.Agents.AI.OpenAI" Version="1.15.0" />
+    <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.10" />
+    <!-- Direct reference only to lift the transitive Microsoft.OpenApi 2.0.0 that
+         Microsoft.AspNetCore.OpenApi 10.0.10 resolves, which trips NU1903
+         (GHSA-v5pm-xwqc-g5wc). Same major version, so it stays API-compatible. -->
+    <PackageReference Include="Microsoft.OpenApi" Version="2.11.0" />
+    <PackageReference Include="Microsoft.Extensions.AI" Version="10.8.3" />
+    <PackageReference Include="ModelContextProtocol.AspNetCore" Version="2.0.0" />
+    <PackageReference Include="Scalar.AspNetCore" Version="2.16.16" />
+    <PackageReference Include="OpenTelemetry.Exporter.OpenTelemetryProtocol" Version="1.17.0" />
+	  <PackageReference Include="OpenTelemetry.Extensions.Hosting" Version="1.17.0" />
+	  <PackageReference Include="OpenTelemetry.Instrumentation.AspNetCore" Version="1.17.0" />
+	  <PackageReference Include="OpenTelemetry.Instrumentation.Http" Version="1.17.0" />
+	  <PackageReference Include="OpenTelemetry.Instrumentation.Runtime" Version="1.17.0" />
   </ItemGroup>
 
 </Project>

@@ -8,11 +8,19 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <AssemblyAttribute Include="System.Runtime.CompilerServices.InternalsVisibleToAttribute">
+      <_Parameter1>AgenticTodos.Tests</_Parameter1>
+    </AssemblyAttribute>
+  </ItemGroup>
+
+  <ItemGroup>
     <PackageReference Include="CommandLineParser" Version="2.9.1" />
-    <PackageReference Include="Microsoft.Agents.AI" Version="1.13.0" />
-    <PackageReference Include="Microsoft.Agents.AI.AGUI" Version="1.13.0-preview.260703.1" />
-    <PackageReference Include="Microsoft.Extensions.AI" Version="10.7.0" />
-    <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.9" />
+    <!-- AG-UI protocol + client SDK; replaced the discontinued Microsoft.Agents.AI.AGUI package. -->
+    <PackageReference Include="AGUI.Abstractions" Version="0.0.3" />
+    <PackageReference Include="AGUI.Client" Version="0.0.3" />
+    <PackageReference Include="Microsoft.Agents.AI" Version="1.15.0" />
+    <PackageReference Include="Microsoft.Extensions.AI" Version="10.8.3" />
+    <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.10" />
     <PackageReference Include="Spectre.Console" Version="0.57.2" />
     <PackageReference Include="Spectre.Console.Json" Version="0.57.2" />
   </ItemGroup>

@@ -1,3 +1,5 @@
+namespace AgenticTodos.Backend;
+
 public record McpUiResourceCsp(
     [property: System.Text.Json.Serialization.JsonPropertyName("resourceDomains")] string[]? ResourceDomains,
     [property: System.Text.Json.Serialization.JsonPropertyName("connectDomains")] string[]? ConnectDomains,

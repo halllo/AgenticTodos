@@ -1,8 +1,6 @@
 using AgenticTodos.Backend;
 using Microsoft.Extensions.AI;
 
-#pragma warning disable MEAI001 // Tool approval types are experimental
-
 namespace AgenticTodos.Tests;
 
 public class ToolApprovalHistoryNormalizerTests
@@ -50,6 +48,46 @@ public class ToolApprovalHistoryNormalizerTests
 
         Assert.Equal(2, history.Count);
         Assert.Equal("let me check", Assert.IsType<TextContent>(Assert.Single(history[0].Contents)).Text);
+    }
+
+    [Fact]
+    public void ReSuppliedRequest_HistoricalCopyDropped_NoOrphanAppended()
+    {
+        // The resume turn: AGUI.Server rebuilds a complete request/response pair from the client's
+        // payload, so the request arrives again alongside the copy this history persisted a turn
+        // earlier. FICC indexes approval requests by id and throws "An item with the same key has
+        // already been added" on the duplicate, so the historical copy has to give way.
+        var history = new List<ChatMessage>
+        {
+            new(ChatRole.User, "increment the counter"),
+            new(ChatRole.Assistant, [Request()]),
+        };
+        var requestMessages = new List<ChatMessage>
+        {
+            new(ChatRole.Assistant, [Request()]),
+            new(ChatRole.User, [Response()]),
+        };
+
+        ToolApprovalHistoryNormalizer.Normalize(history, requestMessages);
+
+        // Only the user message survives; the duplicated request is gone and — because the turn
+        // answers it — no synthetic rejection is appended.
+        Assert.Single(history);
+        Assert.Equal(ChatRole.User, history[0].Role);
+        Assert.DoesNotContain(history, m => m.Contents.Any(c => c is ToolApprovalRequestContent or ToolApprovalResponseContent));
+    }
+
+    [Fact]
+    public void ReSuppliedRequest_KeepsOtherContentInTheSameMessage()
+    {
+        var history = new List<ChatMessage>
+        {
+            new(ChatRole.Assistant, [new TextContent("let me ask"), Request()]),
+        };
+
+        ToolApprovalHistoryNormalizer.Normalize(history, requestMessages: [new ChatMessage(ChatRole.Assistant, [Request()])]);
+
+        Assert.Equal("let me ask", Assert.IsType<TextContent>(Assert.Single(Assert.Single(history).Contents)).Text);
     }
 
     [Fact]
