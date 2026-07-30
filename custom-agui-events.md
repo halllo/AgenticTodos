@@ -6,7 +6,7 @@ Emits AG-UI events the protocol models but `Microsoft.Extensions.AI` has no cont
 
 The AG-UI server SDK (`AGUI.Server`) turns the `ChatResponseUpdate` content it knows into protocol events and hands **everything else** to the fallbacks registered on `AGUIStreamOptions` (tool approvals come with a caveat — [human-in-the-loop.md](human-in-the-loop.md)):
 
-```
+```text
 Agent middleware yields AgentResponseUpdate { Contents = [ConversationStateContent, …] }
      ↓
 AIHostAgent → AsChatResponseUpdatesAsync()
@@ -27,7 +27,7 @@ StateSnapshotEvent · ActivitySnapshotEvent · …  → SSE
 ## Files
 
 | File | Role |
-|---|---|
+| --- | --- |
 | [`backend/AguiClientContent.cs`](backend/AguiClientContent.cs) | `ConversationStateContent`, `McpAppActivityContent`, `EUAIActRiskActivityContent` — emitted for the client, not the model |
 | [`backend/StateSnapshotMiddleware.cs`](backend/StateSnapshotMiddleware.cs) · [`DetectMcpAppsActivityMiddleware.cs`](backend/DetectMcpAppsActivityMiddleware.cs) · [`EUAIActRiskActivityMiddleware.cs`](backend/EUAIActRiskActivityMiddleware.cs) | The producers, one agent middleware per content type |
 | [`backend/AGUIEndpoint.cs`](backend/AGUIEndpoint.cs) | `CreateStreamOptions()`, `MapClientContent(...)`, `ConfigureAguiJson(...)`, `AddAGUIJson(...)` — together, so a test can assert both that the halves agree and that the app installs them |
@@ -72,7 +72,7 @@ Return `null` for content that is not yours so the SDK keeps looking. Step 2 is 
 ## Other hooks on `AGUIStreamOptions`
 
 | Hook | Use |
-|---|---|
+| --- | --- |
 | `MapContent(content => events)` | Any unhandled `AIContent` → events (used here) |
 | `MapInterrupt(content => interrupt)` | Unhandled content → a human-in-the-loop interrupt on `RUN_FINISHED`. **Unused:** the HITL pause emits `InterruptRequestContent`, mapped natively — [human-in-the-loop.md](human-in-the-loop.md) |
 | `MapResult(toolName, frc => events)` / `MapCall(toolName, fcc => events)` | Extra events after a specific tool's result/call |

@@ -22,7 +22,7 @@ The Microsoft docs still use the pre-10.4 type names (`FunctionApprovalRequestCo
 ## Files
 
 | File | Role |
-|---|---|
+| --- | --- |
 | `backend/ToolApprovalInterruptMiddleware.cs` | The conversion both ways; inbound it upgrades the SDK-decoded response to `AlwaysApproveToolApprovalResponseContent` for a standing rule |
 | `backend/Program.cs` | Pipeline `UseToolApprovalInterrupts()` (outer) → `UseToolApproval(...)` (inner); config-driven `ApprovalRequiredAIFunction` wrapping in `GetTools` |
 | `backend/appsettings.json` | `HumanInTheLoop:ApprovalRequiredTools` — gated tool names, local functions and MCP tools alike |
@@ -37,7 +37,7 @@ The Microsoft docs still use the pre-10.4 type names (`FunctionApprovalRequestCo
 
 ## Layering
 
-```
+```text
 CreateAgent pipeline (outer → inner)
   UseOpenTelemetry
 ► UseToolApprovalInterrupts()    wire ⇄ MEAI translation (this doc)
@@ -70,7 +70,7 @@ Cost: one extra round trip, and an inverted order — the client tool runs *afte
 
 ## Flow
 
-```
+```text
 User: "increment the counter"
   ↓
 FICC: increment_counter is ApprovalRequired → ToolApprovalRequestContent, run ends
@@ -99,7 +99,7 @@ The CLI declares its one client-side tool, `change_background_color`, as a **dec
 A finished run leaves the CLI the two kinds of pending work the frontend keeps in its `PendingClientCall` list — both collected during the run, answered after it, never mid-run:
 
 | Pending | Resolved by | Travels back as |
-|---|---|---|
+| --- | --- | --- |
 | client-side tool call | invoking the local `AIFunction` | a `ChatRole.Tool` message → `{ "role": "tool", "toolCallId": … }` |
 | approval interrupt | the console `y / a / s / n` prompt | a trailing `ChatMessage(ChatRole.User, [...InterruptResponseContent])` |
 
@@ -111,7 +111,7 @@ Two kinds of interrupt the CLI cannot answer are reported and then **dropped wit
 
 A turn therefore looks on the wire exactly like the same turn from the browser:
 
-```
+```text
 run 1   messages: [system, user]   tools: [change_background_color]   → TOOL_CALL_* for change_background_color
 run 2   messages: [tool result]    tools: [change_background_color]   → RUN_FINISHED, outcome interrupt
 run 3   messages: []               resume: [{ interruptId, … }]       → text answer

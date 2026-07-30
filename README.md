@@ -60,6 +60,16 @@ dotnet run -- agent "What files do I have selected?" \
 
 The `[State: ...]` line after each response shows the current round-tripped state; [`StateSnapshotMiddleware`](backend/StateSnapshotMiddleware.cs) manages it server-side.
 
+### Tests
+
+Plain `dotnet test` is hermetic and free; the tests that cost money or need a running backend are opt-in ([tests/IntegrationFactAttributes.cs](tests/IntegrationFactAttributes.cs)) and otherwise skip. Both, against the Bedrock agent while `aspire run` is up:
+
+```bash
+RUN_LIVE_LLM_TESTS=1 AG_UI_ENDPOINT=https://localhost:7038/agents/routed/amazonbedrock/agui dotnet test
+```
+
+`RUN_LIVE_LLM_TESTS=1` enables the live-provider tests (each skips again, naming the keys, if its credentials are missing); `AG_UI_ENDPOINT` points the conformance tests at a running endpoint, its alias selecting the agent (`amazonbedrock` or `openai`).
+
 ## Problems
 
 ### ✅ AmazonBedrockRuntimeClient does not support AdditionalProperties
@@ -92,7 +102,7 @@ Three details it has to get right, all because `MapAGUIServer` captures it **onc
 
 - `IdCore` returns a route-derived `routed-{alias}` — alias-*shaped* values only (`alias.All(c => char.IsAsciiLetterOrDigit(c) || c is '-' or '_')`, else `"routed"`) — because [`FileSystemSessionStore`](backend/FileSystemSessionStore.cs) keys session files by `agent.Id` while the base `AIAgent.Id` is a fresh `Guid` per instance.
 - The real agent is resolved **asynchronously**, the in-flight `Task` rather than its result cached in `HttpContext.Items`, so the SDK's several calls per run share one lookup.
-- `Name` is overridden because it *is* the DI key the session store is resolved under (`GetKeyedService<AgentSessionStore>(agent.Name)`), **once at map time, from the root provider** — a scoped store fails at startup with _"Cannot resolve scoped service 'AgentSessionStore' from root provider"_. `AddAGUISessionStore()` therefore registers a singleton stand-in under that key, forwarding each call to the current request's container, which leaves the real store free to use any lifetime ([`AguiSessionStoreLifetimeTests`](tests/AguiSessionStoreLifetimeTests.cs)).
+- `Name` is overridden because it *is* the DI key the session store is resolved under (`GetKeyedService<AgentSessionStore>(agent.Name)`), **once at map time, from the root provider** — a scoped store fails at startup with *"Cannot resolve scoped service 'AgentSessionStore' from root provider"*. `AddAGUISessionStore()` therefore registers a singleton stand-in under that key, forwarding each call to the current request's container, which leaves the real store free to use any lifetime ([`AguiSessionStoreLifetimeTests`](tests/AguiSessionStoreLifetimeTests.cs)).
 
 Both halves of the session file name (`{agent.Id}_{threadId}`) are `Uri.EscapeDataString`-escaped *and* length-bounded (an over-long half becomes a truncated SHA-256, keeping under the 255-byte component limit) because `RunAgentInput.ThreadId` arrives verbatim off the wire and the resulting `File.Create` failure would be unreportable — it happens in `SaveSessionAsync`, after the SSE response is committed. Why each guard, in the XML docs on [backend/FileSystemSessionStore.cs](backend/FileSystemSessionStore.cs); pinned by [`FileSystemSessionStoreTests`](tests/FileSystemSessionStoreTests.cs).
 
@@ -126,7 +136,7 @@ REASONING_START → REASONING_MESSAGE_START (role:"reasoning") → REASONING_MES
 
 then the usual `TEXT_MESSAGE_*` answer. `gpt-4o` is not a reasoning model, so the OpenAI agent is left without `ReasoningOptions` (`reasoning_effort` would be a 400).
 
-**Gotcha — `ExtraHigh` needs an explicit `MaxTokens`.** Unset, the adapter picks a fixed budget (`ExtraHigh` ⇒ 32768) and auto-raises `MaxTokens` to `budget × 4` = **131072**, past Claude's 128000 output limit: _"The maximum tokens you requested exceeds the model limit of 128000"_. Hence the pinned `MaxOutputTokens = 128000` (`maxOutputTokens:` on `CreateAgent`); the budget is a ceiling, not a reservation, so the answer still gets whatever thinking doesn't consume. (`Low`/`Medium`/`High` stay ≤ 128000 even without the cap.)
+**Gotcha — `ExtraHigh` needs an explicit `MaxTokens`.** Unset, the adapter picks a fixed budget (`ExtraHigh` ⇒ 32768) and auto-raises `MaxTokens` to `budget × 4` = **131072**, past Claude's 128000 output limit: *"The maximum tokens you requested exceeds the model limit of 128000"*. Hence the pinned `MaxOutputTokens = 128000` (`maxOutputTokens:` on `CreateAgent`); the budget is a ceiling, not a reservation, so the answer still gets whatever thinking doesn't consume. (`Low`/`Medium`/`High` stay ≤ 128000 even without the cap.)
 
 The frontend ([`chat.component.ts`](frontend/src/app/chat.component.ts)) subscribes to `@ag-ui/client`'s `onReasoning*` handlers and renders the thought as a collapsible 🧠 "thought process" disclosure — created lazily on the first content delta (so a repeated start or a fully-redacted/empty block never leaves a stray bubble), streamed live, auto-collapsed on completion. The CLI prints the same deltas inline in grey (the `TextReasoningContent` case in [`cli/Verbs/Agent.cs`](cli/Verbs/Agent.cs)), skipping the text-less update `REASONING_ENCRYPTED_VALUE` maps to, which carries only the provider's signature over the thought.
 

@@ -44,7 +44,7 @@ One edit serves both consumers because builder middleware wraps **outside** the 
 ## Files
 
 | File | Role |
-|------|------|
+| ------ | ------ |
 | [backend/UploadedFileStore.cs](backend/UploadedFileStore.cs) | `IUploadedFileStore` singleton; saves bytes, persists the metadata index. |
 | [backend/FileEndpoints.cs](backend/FileEndpoints.cs) | `POST /agents/files` (multipart, multiple, 50 MB cap) and `GET /agents/files/{fileId}` (streamed download). Under `/agents/*` so the dev proxy forwards them. |
 | [backend/AttachmentResolutionMiddleware.cs](backend/AttachmentResolutionMiddleware.cs) | Marker → model-visible filename line + paths in `AdditionalProperties` (see [Flow](#flow)). |

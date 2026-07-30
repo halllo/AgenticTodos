@@ -10,7 +10,7 @@ Adding server-side session and conversation history to any project on `Microsoft
 
 ## Architecture Overview
 
-```
+```text
 Frontend per turn → { threadId, messages: [currentUserMessage only] }
 Backend per turn: 1. the AG-UI server SDK binds RunAgentInput, resolving the session from its threadId
   (ChatOptions.TryGetRunAgentInput() is the app-side fallback, for direct invocations — Step 4);
@@ -26,7 +26,7 @@ Backend per turn: 1. the AG-UI server SDK binds RunAgentInput, resolving the ses
 Two directories, created lazily at first write via `Directory.CreateDirectory`. (A third, `UploadedFiles/`, belongs to file attachments — [attachments.md](attachments.md).)
 
 | Directory | File naming | Content |
-|---|---|---|
+| --- | --- | --- |
 | `AgentSessions/` | `{agentId}_{sessionStoreId}.json` | Serialized `AgentSession` object |
 | `ChatHistories/` | `{storeId}_full.json` | Accumulated `ChatMessage[]` array |
 | `ChatHistories/` | `{storeId}_compacted.json` | Optionally reduced/summarized messages |
@@ -66,6 +66,7 @@ public class FileSystemSessionStore : AgentSessionStore
 Full argument: [backend/FileSystemSessionStore.cs](backend/FileSystemSessionStore.cs), [README.md](README.md#-ag-ui-endpoint-mappings-do-not-support-per-request-agent-selection).
 
 **DI registration** (in `Program.cs` — verbatim what this repo has, the two lines just not adjacent):
+
 ```csharp
 builder.Services.AddSingleton<AgentSessionStore, FileSystemSessionStore>();
 builder.Services.AddAGUISessionStore();   // forwarding stand-in
@@ -220,7 +221,7 @@ onRunFinishedEvent: () => { agent.setMessages([]); /* … */ }
 ## NuGet Packages Required
 
 | Package | Used for |
-|---|---|
+| --- | --- |
 | `Microsoft.Agents.AI` | `AIAgent`, `AgentSession`, `ChatHistoryProvider`, `InvokingContext`, `InvokedContext` |
 | `Microsoft.Agents.AI.Abstractions` | `ProviderSessionState<T>` — namespace `Microsoft.Agents.AI`, so no extra `using`; transitive with the above |
 | `Microsoft.Agents.AI.Hosting` | `AgentSessionStore`, `AIHostAgent` |
@@ -239,7 +240,7 @@ These three replaced the discontinued `Microsoft.Agents.AI.AGUI`. Referencing th
 What to check by hand in a new project, and what this repo's tests pin — look there first on a regression.
 
 | Test file | Pins |
-|---|---|
+| --- | --- |
 | [`FileSystemSessionStoreTests`](tests/FileSystemSessionStoreTests.cs) | Step 2: save→get round trip, unknown session → fresh one, delete, distinct threads → distinct files, a hostile `sessionStoreId` not escaping the path base while an ordinary one stays readable |
 | [`ChatHistoryProviderTests`](tests/ChatHistoryProviderTests.cs) | Step 3: transient messages dropped and never accumulating, everything else appended |
 | [`HttpContextRoutingAgentTests`](tests/HttpContextRoutingAgentTests.cs) | Step 4: the lookup awaited once per request, shared by concurrent callers; `IdCore` route-derived, alias-shaped only; `Name` as the session-store DI key; a session-less run taking the thread id from the AG-UI input and saving after (streaming: after drain); a run with a session never touching the store; one with neither failing |

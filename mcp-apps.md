@@ -6,7 +6,7 @@ Two independent MCP clients talk to the one MCP server: the backend agent's (`Ge
 
 ## Solution layout
 
-.NET projects in [AgenticTodos.slnx](AgenticTodos.slnx); [apphost/AppHost.cs](apphost/AppHost.cs) orchestrates all of it with .NET Aspire, adding `frontend/` via `builder.AddViteApp(...)` rather than as a solution project. Dev URLs: `apphost/` — Aspire AppHost, service discovery, http://localhost:15063; `backend/` — ASP.NET Core agents, AG-UI endpoint, MCP relay, sandbox static files, http://localhost:5288; `mcpserver/` — hosts the MCP apps, http://localhost:5082; `frontend/` — Angular (Vite), embeds MCP apps, http://localhost:3000; `cli/` — AG-UI command-line client; `tests/` — xUnit tests.
+.NET projects in [AgenticTodos.slnx](AgenticTodos.slnx); [apphost/AppHost.cs](apphost/AppHost.cs) orchestrates all of it with .NET Aspire, adding `frontend/` via `builder.AddViteApp(...)` rather than as a solution project. Dev URLs: `apphost/` — Aspire AppHost, service discovery, <http://localhost:15063>; `backend/` — ASP.NET Core agents, AG-UI endpoint, MCP relay, sandbox static files, <http://localhost:5288>; `mcpserver/` — hosts the MCP apps, <http://localhost:5082>; `frontend/` — Angular (Vite), embeds MCP apps, <http://localhost:3000>; `cli/` — AG-UI command-line client; `tests/` — xUnit tests.
 
 The backend finds the MCP server through Aspire-injected keys `services:AgenticTodos-McpServer:https:0` / `…:http:0` (no hardcoded `McpServerUrl`); in dev the frontend proxies `/agents` to the **backend** ([frontend/src/proxy.conf.json](frontend/src/proxy.conf.json)), which is where both the AG-UI endpoint and the relay live.
 
