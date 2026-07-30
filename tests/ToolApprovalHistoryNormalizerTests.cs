@@ -91,6 +91,48 @@ public class ToolApprovalHistoryNormalizerTests
     }
 
     [Fact]
+    public void DuplicateRequestsInHistory_OnlyTheLastCopySurvives()
+    {
+        // What the append-only store leaves behind once a resume turn has been persisted: the copy the
+        // pausing turn wrote and the copy the AG-UI SDK rebuilt from the resume payload. Harmless while
+        // the call completes — but without the tool result, FICC pairs the single response to one of
+        // them and throws on the other, on this and every later turn.
+        var history = new List<ChatMessage>
+        {
+            new(ChatRole.Assistant, [new TextContent("sure thing"), Request()]),
+            new(ChatRole.Assistant, [Request()]),
+            new(ChatRole.User, [Response()]),
+        };
+
+        ToolApprovalHistoryNormalizer.Normalize(history, requestMessages: []);
+
+        // The pausing turn's message keeps its text and loses the superseded request; the last copy and
+        // the response stay, so FICC can still pair them and execute the approved call.
+        Assert.Equal(3, history.Count);
+        Assert.Equal("sure thing", Assert.IsType<TextContent>(Assert.Single(history[0].Contents)).Text);
+        Assert.Single(history.SelectMany(m => m.Contents).OfType<ToolApprovalRequestContent>());
+        Assert.Single(history.SelectMany(m => m.Contents).OfType<ToolApprovalResponseContent>());
+    }
+
+    [Fact]
+    public void DuplicateRequestsInHistory_DistinctIdsAreUntouched()
+    {
+        var history = new List<ChatMessage>
+        {
+            new(ChatRole.Assistant, [Request("call_1")]),
+            new(ChatRole.Assistant, [Request("call_2")]),
+            new(ChatRole.User, [Response("call_1"), Response("call_2")]),
+        };
+
+        ToolApprovalHistoryNormalizer.Normalize(history, requestMessages: []);
+
+        Assert.Equal(3, history.Count);
+        Assert.Equal(
+            ["ficc_call_1", "ficc_call_2"],
+            history.SelectMany(m => m.Contents).OfType<ToolApprovalRequestContent>().Select(r => r.RequestId));
+    }
+
+    [Fact]
     public void OrphanedRequest_GetsRejectedResponseAppended()
     {
         var history = new List<ChatMessage>
@@ -185,6 +227,8 @@ public class ToolApprovalHistoryNormalizerTests
             new(ChatRole.Assistant, [Request()]),
             new(ChatRole.User, [Response()]),
             new(ChatRole.Tool, [new FunctionResultContent("call_1", "1")]),
+            new(ChatRole.Assistant, [Request("call_2")]),
+            // A duplicate of call_2's request: the second pass must not re-drop or re-append anything.
             new(ChatRole.Assistant, [Request("call_2")]),
         };
 

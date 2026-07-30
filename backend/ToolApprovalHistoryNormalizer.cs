@@ -21,7 +21,7 @@ namespace AgenticTodos.Backend;
 /// <c>"ToolApprovalRequestContent found ... no matching ToolApprovalResponseContent"</c>.
 /// </para>
 /// <para>
-/// Three repairs, all idempotent:
+/// Four repairs, all idempotent:
 /// <list type="number">
 /// <item><b>Scrub completed pairs</b> — approval requests/responses whose tool call already has a
 /// <see cref="FunctionResultContent"/> in history are removed; the recreated call/result pair is the
@@ -32,6 +32,15 @@ namespace AgenticTodos.Backend;
 /// (session-backed) history already holds. FICC indexes approval requests by id and throws
 /// <c>"An item with the same key has already been added"</c> on the duplicate, so the historical copy
 /// gives way to the one arriving with the turn.</item>
+/// <item><b>Keep only the newest copy of a request id</b> — repair 2 de-duplicates the list handed to
+/// the model, not the file: the store appends the re-supplied pair too, so both copies live on disk
+/// from then on. They are harmless while the call completes (repair 1 removes them), but a history
+/// holding the two requests and a single response — a compacted history that dropped the tool result
+/// is the likeliest way in — matches none of the repairs here, and FICC, which pairs one response to
+/// one request, throws <c>"ToolApprovalRequestContent found ... no matching
+/// ToolApprovalResponseContent"</c> on the unpaired copy for every remaining turn of the
+/// conversation. The surviving copy is the last one, which is also the one carrying FICC's in-memory
+/// repairs.</item>
 /// <item><b>Reject orphans</b> — a request with no response in history <i>and</i> none arriving in
 /// the current turn's request messages can never be answered (the client lost it, e.g. session file
 /// deleted or thread abandoned); every later turn would throw. A synthetic rejected response is
@@ -62,8 +71,23 @@ internal static class ToolApprovalHistoryNormalizer
             .Select(r => r.RequestId)
             .ToHashSet(StringComparer.Ordinal);
 
-        // 1. + 2. Scrub approval content that completed earlier or that this turn re-supplies.
-        if (completedCallIds.Count > 0 || resuppliedRequestIds.Count > 0)
+        // Superseded copies of a request id, by reference: two persisted copies are equal in every
+        // field but the one FICC already repaired, and only the last of them may survive.
+        var supersededRequests = new HashSet<object>(ReferenceEqualityComparer.Instance);
+        Dictionary<string, ToolApprovalRequestContent> newestRequestById = new(StringComparer.Ordinal);
+        foreach (var request in history.SelectMany(m => m.Contents).OfType<ToolApprovalRequestContent>())
+        {
+            if (newestRequestById.TryGetValue(request.RequestId, out var previous) && !ReferenceEquals(previous, request))
+            {
+                supersededRequests.Add(previous);
+            }
+
+            newestRequestById[request.RequestId] = request;
+        }
+
+        // 1. – 3. Scrub approval content that completed earlier, that this turn re-supplies, or that a
+        // newer copy of the same request id supersedes.
+        if (completedCallIds.Count > 0 || resuppliedRequestIds.Count > 0 || supersededRequests.Count > 0)
         {
             for (var i = history.Count - 1; i >= 0; i--)
             {
@@ -87,7 +111,7 @@ internal static class ToolApprovalHistoryNormalizer
             }
         }
 
-        // 3. Reject orphaned requests that nothing (neither history nor the current turn) answers.
+        // 4. Reject orphaned requests that nothing (neither history nor the current turn) answers.
         var answeredRequestIds = history
             .Concat(requestMessageList)
             .SelectMany(m => m.Contents)
@@ -113,7 +137,9 @@ internal static class ToolApprovalHistoryNormalizer
         bool IsStaleApprovalContent(AIContent content) => content switch
         {
             ToolApprovalRequestContent { ToolCall: { } toolCall } request =>
-                completedCallIds.Contains(toolCall.CallId) || resuppliedRequestIds.Contains(request.RequestId),
+                completedCallIds.Contains(toolCall.CallId)
+                || resuppliedRequestIds.Contains(request.RequestId)
+                || supersededRequests.Contains(request),
             ToolApprovalResponseContent { ToolCall: { } toolCall } response =>
                 completedCallIds.Contains(toolCall.CallId) || resuppliedRequestIds.Contains(response.RequestId),
             _ => false,

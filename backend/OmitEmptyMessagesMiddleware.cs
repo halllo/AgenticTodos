@@ -28,7 +28,7 @@ namespace AgenticTodos.Backend;
 /// wire), and <c>FunctionInvokingChatClient</c> cannot know an AG-UI type at all — the dependency runs
 /// the other way. <c>AGUIResume.Status</c> has no reader either, so the decision itself never becomes a
 /// <see cref="ToolApprovalResponseContent"/>; what actually resolves the pending approval is
-/// <see cref="ToolApprovalHistoryNormalizer"/>'s third repair, which auto-rejects the request left
+/// <see cref="ToolApprovalHistoryNormalizer"/>'s fourth repair, which auto-rejects the request left
 /// unanswered in history. The message is pure residue of the wire format.
 /// </para>
 /// </summary>
