@@ -72,16 +72,98 @@ public class AguiRunErrorMiddlewareTests
     }
 
     [Fact]
-    public async Task FailureAfterTheStreamStarted_IsLeftAlone()
+    public async Task FailureAfterTheStreamStarted_AppendsARunError()
     {
-        // Once the SDK has written its first event the status and headers are committed; the stream can
-        // only be aborted, and the client sees a dropped connection. Reporting a RUN_ERROR here would
-        // mean a second RUN_STARTED mid-stream, which the client rejects.
-        await Assert.ThrowsAsync<AguiClientException>(() => RunAsync(context =>
+        // The stream is committed, so it cannot be reshaped — but it can still be appended to, and a
+        // terminal RUN_ERROR is the difference between a run that ended in the protocol and one the
+        // client only sees as a dropped connection. Provider validation failures on a mid-run model
+        // call land here, which is the common case.
+        var (events, _) = await RunAsync(StreamThenThrow(new AguiClientException("too late")));
+
+        Assert.Equal("RUN_ERROR", events[^1].GetProperty("type").GetString());
+        Assert.Equal("StreamError", events[^1].GetProperty("code").GetString());
+        Assert.Equal("too late", events[^1].GetProperty("message").GetString());
+    }
+
+    [Fact]
+    public async Task FailureAfterTheStreamStarted_SendsNoSecondRunStarted()
+    {
+        // A bare RUN_ERROR is legal at any point in a stream — the verifiers' "still active" guards are
+        // attached to RUN_FINISHED only. A second RUN_STARTED is not: both clients reject one while a
+        // run is active, and rejecting it would discard the error with it.
+        var (events, _) = await RunAsync(StreamThenThrow(new AguiClientException("too late")));
+
+        Assert.Single(events, e => e.GetProperty("type").GetString() == "RUN_STARTED");
+        Assert.Equal(2, events.Count);
+    }
+
+    [Fact]
+    public async Task FailureAfterTheStreamStarted_KeepsTheEventsAlreadySent()
+    {
+        // Response.Clear() would throw on a committed response, and the run's real events are the user's
+        // turn so far — the error is appended after them, not in place of them.
+        var (events, _) = await RunAsync(StreamThenThrow(new InvalidOperationException("boom")));
+
+        Assert.Equal("RUN_STARTED", events[0].GetProperty("type").GetString());
+    }
+
+    [Fact]
+    public async Task FailureAfterTheStreamStarted_IsReportedGenerically()
+    {
+        // Same policy as the pre-stream path, with a message that does not claim the run never began.
+        var (events, _) = await RunAsync(StreamThenThrow(new InvalidOperationException("secret-connection-string")));
+
+        var message = events[^1].GetProperty("message").GetString();
+        Assert.DoesNotContain("secret-connection-string", message);
+        Assert.Equal("The agent run failed.", message);
+    }
+
+    [Fact]
+    public async Task FailureAfterTheStreamStarted_SurvivesADeadConnection()
+    {
+        // The failure that got us here is sometimes the connection itself. A write that throws in turn
+        // must not resurface as an exception: there is nobody left to tell, and aborting the response
+        // would discard whatever of the frame did get through.
+        var (_, context) = await RunAsync(context =>
         {
             context.Features.Get<AguiRunErrorPipeline.StartedResponseFeature>()!.HasStarted = true;
-            throw new AguiClientException("too late");
-        }));
+            // HttpResponse.Body reads through IHttpResponseBodyFeature, so that is the one to swap.
+            context.Features.Set<IHttpResponseBodyFeature>(new StreamResponseBodyFeature(new ThrowingStream()));
+            throw new InvalidOperationException("boom");
+        });
+
+        Assert.Equal(StatusCodes.Status200OK, context.Response.StatusCode);
+    }
+
+    /// <summary>
+    /// A terminal that gets one event onto the wire — enough to commit the response — and then fails,
+    /// the shape of every mid-run failure.
+    /// </summary>
+    private static RequestDelegate StreamThenThrow(Exception failure) => async context =>
+    {
+        context.Response.ContentType = "text/event-stream";
+        await context.Response.WriteAsync("data: {\"type\":\"RUN_STARTED\",\"threadId\":\"t\",\"runId\":\"r\"}\n\n");
+        context.Features.Get<AguiRunErrorPipeline.StartedResponseFeature>()!.HasStarted = true;
+        throw failure;
+    };
+
+    private sealed class ThrowingStream : Stream
+    {
+        public override bool CanRead => false;
+        public override bool CanSeek => false;
+        public override bool CanWrite => true;
+        public override long Length => throw new NotSupportedException();
+        public override long Position { get => 0; set => throw new NotSupportedException(); }
+        public override void Flush() => throw new IOException("connection reset");
+        public override Task FlushAsync(CancellationToken cancellationToken) => throw new IOException("connection reset");
+        public override int Read(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
+        public override void Write(byte[] buffer, int offset, int count) => throw new IOException("connection reset");
+        public override Task WriteAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken) =>
+            throw new IOException("connection reset");
+        public override ValueTask WriteAsync(ReadOnlyMemory<byte> buffer, CancellationToken cancellationToken) =>
+            throw new IOException("connection reset");
     }
 
     [Fact]

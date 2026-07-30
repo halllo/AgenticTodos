@@ -91,9 +91,23 @@ data: {"type":"RUN_ERROR","message":"Unknown agent alias 'nope'.","code":"EagerE
 - `RUN_STARTED` first, because clients reject any event before a run began; both ids empty, because this middleware deliberately does not read the request body — the SDK has bound them by then, but they are unreachable from outside the endpoint, and clients only correlate with them.
 - **Only an `AguiClientException`'s message goes on the wire** — a caller-caused failure whose text is safe to show, an unknown alias being this app's one. Every other unhandled exception the catch admits (a provider credential failure, a DI resolution error) describes server internals, so it is logged and the client told *"The agent run could not be started."*
 - Deliberately **not** converted: `OperationCanceledException` (the client hung up, nobody left to tell) and `BadHttpRequestException` (a malformed body is HTTP-level and keeps its 4xx rather than being dressed up as a started run).
-- Pre-stream failures only: after the first event the status and headers are committed, so a later failure can only abort the body — the stream ends without `RUN_FINISHED`, a dropped connection to the client.
 
-The argument for each is in the middleware's XML docs and inline comments; all four are pinned by [`AguiRunErrorMiddlewareTests`](tests/AguiRunErrorMiddlewareTests.cs).
+A failure **after** the first event is just as invisible — the provider rejecting the follow-up model call mid-run is the common way in — and gets the same treatment, minus what a committed response no longer allows:
+
+```text
+…the run's real events…
+
+data: {"type":"RUN_ERROR","message":"The agent run failed.","code":"StreamError"}
+```
+
+- The response cannot be *reshaped* once it has started — `Response.Clear()` and any header assignment throw — but it can still be **appended to**, and one more frame is all the protocol needs. Without it the stream simply stops: no terminal event, which every client reads as a dropped connection, and in the browser leaves `pendingInterrupts` populated so the *next* turn is rejected too.
+- **No second `RUN_STARTED`**, unlike the pre-stream path: this run already sent one, and both clients reject a `RUN_STARTED` while a run is active — which would discard the error with it. A bare `RUN_ERROR` is legal at any point in a stream: in `@ag-ui/client` and `AGUI.Client` alike the *"still active"* guards (open text message, open tool call, open step) are attached to `RUN_FINISHED` only, `RUN_ERROR` being the protocol's abort event.
+- The generic message is *"The agent run failed."*, not the pre-stream *"could not be started."* — it did start, and that is what tells a user their turn was half-executed.
+- The append is **best effort**: the failure that got us here is sometimes the connection itself, so a write that throws in turn is logged and swallowed. Rethrowing would abort the response and discard whatever of the frame did get through.
+- Both clients were checked in every position a failure can interrupt — text message open, tool call open, reasoning open, step open, after the turn's tool results, and after `RUN_FINISHED` (reachable through a failed session save, which runs once the run's own terminal event is out). `AGUI.Client` is pinned by [`AguiRunErrorClientContractTests`](tests/AguiRunErrorClientContractTests.cs); `@ag-ui/client` delivers all six to `onRunErrorEvent` and resolves `runAgent` normally.
+- Two things the client does reject, neither of them reachable: a **second** `RUN_ERROR` (no SDK version in use emits one — 1.9 did, but it swallowed the exception rather than rethrowing, so it could never collide with this catch), and a **torn** preceding frame, whose malformed JSON kills `@ag-ui/client` before it reaches the appended event. The leading `\n\n` separator keeps the new frame off the end of a truncated one but cannot rescue that case — which requires a write to fail mid-frame, i.e. a connection that is already gone.
+
+The argument for each is in the middleware's XML docs and inline comments; all of them are pinned by [`AguiRunErrorMiddlewareTests`](tests/AguiRunErrorMiddlewareTests.cs).
 
 ## Constraints
 
