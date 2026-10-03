@@ -219,6 +219,15 @@ namespace AgenticTodos.Cli.Verbs
                                             }
                                             break;
 
+                                        // RUN_ERROR. Since AGUI.Client 1.0 it no longer throws but
+                                        // arrives as an update carrying ErrorContent, after which the
+                                        // stream simply ends. Rethrown so the failed run takes the same
+                                        // path as a transport failure: the catch below reports it and
+                                        // discards the client calls the run surfaced.
+                                        case ErrorContent error:
+                                            throw new InvalidOperationException(
+                                                error.ErrorCode is { Length: > 0 } code ? $"{error.Message} ({code})" : error.Message);
+
                                         case InterruptRequestContent interrupt:
                                             pendingInterrupts.Add(interrupt);
                                             break;
@@ -249,9 +258,8 @@ namespace AgenticTodos.Cli.Verbs
                         }
                         catch (Exception ex) when (ex is not OperationCanceledException || !cancellationToken.IsCancellationRequested)
                         {
-                            // A RUN_ERROR event surfaces as a thrown exception (AGUIChatClient rethrows
-                            // it as InvalidOperationException), so this is the only place the run's own
-                            // failure can be observed. One bad turn must not end the REPL.
+                            // Both a RUN_ERROR (rethrown from its ErrorContent above) and a failed
+                            // transport land here. One bad turn must not end the REPL.
                             // The filter lets an OperationCanceledException through unless the token
                             // above actually asked for one: HttpClient.Timeout expiring raises
                             // TaskCanceledException, which is a failed turn and not a stop the user

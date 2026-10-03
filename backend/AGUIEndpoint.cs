@@ -1,5 +1,6 @@
 using System.Runtime.CompilerServices;
 using System.Text.Json;
+using System.Text.Json.Serialization.Metadata;
 using AGUI.Abstractions;
 using AGUI.Server;
 using Microsoft.Agents.AI;
@@ -104,6 +105,25 @@ public static class AGUIEndpoint
     /// at request time rather than at build time. Kept next to the mapping, and reachable on its own via
     /// <see cref="AddAGUIJson"/>, so a test can assert both halves agree.
     /// </para>
+    /// <para>
+    /// It also omits <c>null</c> properties of AG-UI protocol types — the events and what they nest, such
+    /// as a run outcome or its token usage. Since AG-UI 1.0 most of their properties carry no ignore
+    /// condition of their own, so the app's default writes <c>"usage":null</c>,
+    /// <c>"input":null</c>, <c>"pendingToolCallIds":null</c> and the like. @ag-ui/client's schemas have those
+    /// fields optional but not nullable, so each such event fails validation (a <c>ZodError</c>) and
+    /// the run is aborted on the client. The AG-UI source-generated context omits nulls too, but once
+    /// chained into these options the app's ignore condition is the one that applies. Properties that do
+    /// declare a condition keep it (the modifier only fills in a missing <c>ShouldSerialize</c>), so e.g.
+    /// <c>CustomEvent.Value</c> is still written when null.
+    /// </para>
+    /// <para>
+    /// Scoped to the protocol assembly's types — the app's own content types keep serializing as before — by a
+    /// type-info modifier rather than set as the options'
+    /// <c>DefaultIgnoreCondition</c>: <c>WhenWritingNull</c> makes these options match the
+    /// Microsoft.Extensions.AI source-generated context closely enough for System.Text.Json to use its
+    /// fast-path serializers, which bypass the content types registered below — every
+    /// <c>STATE_SNAPSHOT</c> and <c>ACTIVITY_SNAPSHOT</c> would then throw on <c>rawEvent</c>.
+    /// </para>
     /// </summary>
     internal static void ConfigureAguiJson(JsonSerializerOptions options)
     {
@@ -111,6 +131,20 @@ public static class AGUIEndpoint
         options.AddAIContentType<ConversationStateContent>("agenticTodos.conversationState");
         options.AddAIContentType<McpAppActivityContent>("agenticTodos.mcpAppActivity");
         options.AddAIContentType<EUAIActRiskActivityContent>("agenticTodos.euAiActRiskActivity");
+        options.TypeInfoResolver = options.TypeInfoResolver?.WithAddedModifier(OmitNullProtocolProperties);
+    }
+
+    private static void OmitNullProtocolProperties(JsonTypeInfo typeInfo)
+    {
+        if (typeInfo.Type.Assembly != typeof(BaseEvent).Assembly)
+        {
+            return;
+        }
+
+        foreach (var property in typeInfo.Properties)
+        {
+            property.ShouldSerialize ??= static (_, value) => value is not null;
+        }
     }
 
     internal static IEnumerable<BaseEvent>? MapClientContent(AIContent content) => content switch
@@ -179,12 +213,13 @@ public static class AGUIEndpoint
     /// lifetime — scoped included — even though the one in use today is a singleton.
     /// </para>
     /// <para>
-    /// The SDK's wrapper is a pass-through here: it only rewrites the session id when a
-    /// <c>SessionIsolationKeyProvider</c> is registered, and this app registers none. That also fixes
-    /// the app's threat model — sessions are keyed by the bare <c>ThreadId</c> the client sends, so any
-    /// caller who knows a thread id can resume it. That is fine for a single-user sample; a multi-user
-    /// host would add <c>UseClaimsBasedSessionIsolation(...)</c>, after which the id reaching
-    /// <see cref="FileSystemSessionStore"/> becomes <c>{key}::{threadId}</c>.
+    /// The SDK's wrapper is a pass-through here: it only adds an <c>isolation</c> partition to the
+    /// session key when an <c>AgentIsolationKeyProvider</c> is registered, and this app registers none.
+    /// That also fixes the app's threat model — sessions are keyed by the bare <c>ThreadId</c> the client
+    /// sends, so any caller who knows a thread id can resume it. That is fine for a single-user sample; a
+    /// multi-user host would register a provider (e.g. one deriving the key from the user's claims),
+    /// after which every key reaching <see cref="FileSystemSessionStore"/> carries that partition and is
+    /// stored in a directory of its own.
     /// </para>
     /// </summary>
     public static IServiceCollection AddAGUISessionStore(this IServiceCollection services)
@@ -202,14 +237,21 @@ public static class AGUIEndpoint
     /// </remarks>
     internal sealed class HttpContextRoutingSessionStore(IHttpContextAccessor httpContextAccessor) : AgentSessionStore
     {
-        public override ValueTask<AgentSession> GetSessionAsync(AIAgent agent, string sessionStoreId, CancellationToken cancellationToken = default)
-            => Current().GetSessionAsync(agent, sessionStoreId, cancellationToken);
+        public override ValueTask<AgentSession?> GetSessionAsync(AIAgent agent, AgentSessionStoreKey key, CancellationToken cancellationToken = default)
+            => Current().GetSessionAsync(agent, key, cancellationToken);
 
-        public override ValueTask SaveSessionAsync(AIAgent agent, string sessionStoreId, AgentSession session, CancellationToken cancellationToken = default)
-            => Current().SaveSessionAsync(agent, sessionStoreId, session, cancellationToken);
+        // Forwarded too, so a real store that overrides how sessions are created keeps that behavior.
+        public override ValueTask<AgentSession> GetOrCreateSessionAsync(AIAgent agent, AgentSessionStoreKey key, CancellationToken cancellationToken = default)
+            => Current().GetOrCreateSessionAsync(agent, key, cancellationToken);
 
-        public override ValueTask DeleteSessionAsync(AIAgent agent, string sessionStoreId, CancellationToken cancellationToken = default)
-            => Current().DeleteSessionAsync(agent, sessionStoreId, cancellationToken);
+        public override ValueTask SaveSessionAsync(AIAgent agent, AgentSessionStoreKey key, AgentSession session, CancellationToken cancellationToken = default)
+            => Current().SaveSessionAsync(agent, key, session, cancellationToken);
+
+        // GetService is deliberately not forwarded. MapAGUIServer queries the store at map time, from the
+        // root provider (to see whether it is already isolation-scoped), where there is no request to
+        // forward to — Current() would throw at startup. Answering for this instance alone only means a
+        // store registered pre-wrapped would be wrapped twice, which adds the same partition again: no
+        // change in behaviour.
 
         private AgentSessionStore Current()
         {

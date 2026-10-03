@@ -21,6 +21,35 @@ namespace AgenticTodos.Tests;
 public class AguiEndpointWiringTests
 {
     [Fact]
+    public void AProtocolPropertyWithItsOwnIgnoreCondition_KeepsIt()
+    {
+        // The null omission only fills in a missing condition. CustomEvent.Value declares "never ignore":
+        // a custom event with no value still carries "value": null, as the protocol has it.
+        var json = JsonSerializer.Serialize<BaseEvent>(new CustomEvent { Name = "x", Value = null }, AguiJson.Options);
+
+        using var document = JsonDocument.Parse(json);
+        Assert.Equal(JsonValueKind.Null, document.RootElement.GetProperty("value").ValueKind);
+    }
+
+    [Fact]
+    public void ProtocolTypes_OmitNullProperties_IncludingNestedOnes()
+    {
+        // The RUN_FINISHED shape the openai agent produces. With nulls written, @ag-ui/client rejects
+        // `"pendingToolCallIds": null` and `"provider": null` (optional, not nullable) with a ZodError.
+        var json = JsonSerializer.Serialize<BaseEvent>(new RunFinishedEvent
+        {
+            ThreadId = "t",
+            RunId = "r",
+            Outcome = new RunFinishedSuccessOutcome(),
+            Usage = [new TokenUsage { Model = "m", InputTokens = 1 }],
+        }, AguiJson.Options);
+
+        using var document = JsonDocument.Parse(json);
+        JsonAssert.NoNulls(document.RootElement);
+        Assert.Equal("m", document.RootElement.GetProperty("usage")[0].GetProperty("model").GetString());
+    }
+
+    [Fact]
     public void StreamOptions_ReachTheEndpointAsMetadata()
     {
         // MapAGUIServer reads the configuration as

@@ -41,13 +41,55 @@ public class ToolApprovalHistoryNormalizerTests
         {
             new(ChatRole.Assistant, [new TextContent("let me check"), Request()]),
             new(ChatRole.User, [Response()]),
+            new(ChatRole.Assistant, [new FunctionCallContent("call_1", "increment_counter")]),
             new(ChatRole.Tool, [new FunctionResultContent("call_1", "1")]),
         };
 
         ToolApprovalHistoryNormalizer.Normalize(history, requestMessages: []);
 
-        Assert.Equal(2, history.Count);
+        Assert.Equal(3, history.Count);
         Assert.Equal("let me check", Assert.IsType<TextContent>(Assert.Single(history[0].Contents)).Text);
+    }
+
+    [Fact]
+    public void CompletedRequest_ThatIsTheOnlyRecordOfItsCall_BecomesTheCall()
+    {
+        // An escalated client-tool call: FICC sent it to the client as an approval request, the client executed it
+        // and answered with a result, and FICC never recreated the call. Dropping the request would leave the
+        // result without a call, which Bedrock rejects.
+        var history = new List<ChatMessage>
+        {
+            new(ChatRole.User, "add a todo"),
+            new(ChatRole.Assistant, [new TextContent("on it"), Request("call_2")]),
+            new(ChatRole.Tool, [new FunctionResultContent("call_2", "added")]),
+        };
+
+        ToolApprovalHistoryNormalizer.Normalize(history, requestMessages: []);
+
+        Assert.Equal(3, history.Count);
+        Assert.Collection(history[1].Contents,
+            c => Assert.IsType<TextContent>(c),
+            c => Assert.Equal("call_2", Assert.IsType<FunctionCallContent>(c).CallId));
+        Assert.DoesNotContain(history, m => m.Contents.Any(c => c is ToolApprovalRequestContent));
+    }
+
+    [Fact]
+    public void CompletedRequest_WhoseResultArrivesWithThisTurn_BecomesTheCall_AndIsNotRejected()
+    {
+        // The client answers an escalated client-tool call with a tool message in the current turn. Before, the
+        // request counted as unanswered: it got a synthetic rejection, FICC dropped it, and the client's result
+        // reached the model without its call.
+        var history = new List<ChatMessage>
+        {
+            new(ChatRole.User, "add a todo"),
+            new(ChatRole.Assistant, [Request("call_2")]),
+        };
+
+        ToolApprovalHistoryNormalizer.Normalize(history, requestMessages: [new(ChatRole.Tool, [new FunctionResultContent("call_2", "added")])]);
+
+        Assert.Equal(2, history.Count);
+        Assert.Equal("call_2", Assert.IsType<FunctionCallContent>(Assert.Single(history[1].Contents)).CallId);
+        Assert.DoesNotContain(history, m => m.Contents.Any(c => c is ToolApprovalResponseContent));
     }
 
     [Fact]

@@ -65,7 +65,7 @@ public class AguiSessionStoreLifetimeTests
         var endpointStore = provider.GetRequiredKeyedService<AgentSessionStore>(AGUIEndpoint.RoutedAgentName);
 
         var ex = await Assert.ThrowsAsync<InvalidOperationException>(
-            async () => await endpointStore.GetSessionAsync(StubAgent(), "thread-1"));
+            async () => await endpointStore.GetSessionAsync(StubAgent(), new AgentSessionStoreKey("thread-1")));
         Assert.Contains("HttpContext", ex.Message);
     }
 
@@ -80,7 +80,7 @@ public class AguiSessionStoreLifetimeTests
         accessor.HttpContext = new DefaultHttpContext { RequestServices = scope.ServiceProvider };
         try
         {
-            await endpointStore.GetSessionAsync(StubAgent(), sessionStoreId);
+            await endpointStore.GetSessionAsync(StubAgent(), new AgentSessionStoreKey(sessionStoreId));
             return (RecordingSessionStore)scope.ServiceProvider.GetRequiredService<AgentSessionStore>();
         }
         finally
@@ -112,21 +112,15 @@ public class AguiSessionStoreLifetimeTests
     {
         public List<string> SeenSessionStoreIds { get; } = [];
 
-        public override ValueTask<AgentSession> GetSessionAsync(AIAgent agent, string sessionStoreId, CancellationToken cancellationToken = default)
+        public override ValueTask<AgentSession?> GetSessionAsync(AIAgent agent, AgentSessionStoreKey key, CancellationToken cancellationToken = default)
         {
-            SeenSessionStoreIds.Add(sessionStoreId);
-            return agent.CreateSessionAsync(cancellationToken);
+            SeenSessionStoreIds.Add(key.SessionId);
+            return ValueTask.FromResult<AgentSession?>(null);
         }
 
-        public override ValueTask SaveSessionAsync(AIAgent agent, string sessionStoreId, AgentSession session, CancellationToken cancellationToken = default)
+        public override ValueTask SaveSessionAsync(AIAgent agent, AgentSessionStoreKey key, AgentSession session, CancellationToken cancellationToken = default)
         {
-            SeenSessionStoreIds.Add(sessionStoreId);
-            return ValueTask.CompletedTask;
-        }
-
-        public override ValueTask DeleteSessionAsync(AIAgent agent, string sessionStoreId, CancellationToken cancellationToken = default)
-        {
-            SeenSessionStoreIds.Add(sessionStoreId);
+            SeenSessionStoreIds.Add(key.SessionId);
             return ValueTask.CompletedTask;
         }
     }

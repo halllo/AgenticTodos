@@ -23,35 +23,113 @@ public class FileSystemSessionStoreTests : IDisposable
         var agent = NewAgent();
         var session = await agent.CreateSessionAsync();
 
-        await store.SaveSessionAsync(agent, "thread_abc123", session);
-        var loaded = await store.GetSessionAsync(agent, "thread_abc123");
+        await store.SaveSessionAsync(agent, new AgentSessionStoreKey("thread_abc123"), session);
+        var loaded = await store.GetSessionAsync(agent, new AgentSessionStoreKey("thread_abc123"));
 
         Assert.NotNull(loaded);
         Assert.Single(Directory.GetFiles(this.pathBase));
     }
 
     [Fact]
-    public async Task UnknownSession_StartsAFreshOne()
+    public async Task UnknownSession_IsReportedAsMissing_SoTheBaseClassStartsAFreshOne()
     {
         var store = NewStore();
         var agent = NewAgent();
 
-        var session = await store.GetSessionAsync(agent, "thread_never_seen");
-
-        Assert.NotNull(session);
+        Assert.Null(await store.GetSessionAsync(agent, new AgentSessionStoreKey("thread_never_seen")));
+        Assert.NotNull(await store.GetOrCreateSessionAsync(agent, new AgentSessionStoreKey("thread_never_seen")));
         Assert.False(Directory.Exists(this.pathBase));
     }
 
     [Fact]
-    public async Task Delete_RemovesTheFile()
+    public async Task Partitions_ArePartOfTheIdentity()
+    {
+        // The SDK's contract: every partition counts, so the same session id under another partition
+        // (e.g. another user's isolation key) must not find this session.
+        var store = NewStore();
+        var agent = NewAgent();
+        var userA = new AgentSessionStoreKey("thread_abc123").WithPartition("user", "a");
+        await store.SaveSessionAsync(agent, userA, await agent.CreateSessionAsync());
+
+        Assert.NotNull(await store.GetSessionAsync(agent, userA));
+        Assert.Null(await store.GetSessionAsync(agent, new AgentSessionStoreKey("thread_abc123").WithPartition("user", "b")));
+        Assert.Null(await store.GetSessionAsync(agent, new AgentSessionStoreKey("thread_abc123")));
+    }
+
+    [Fact]
+    public async Task PartitionsDifferingOnlyInCase_DoNotShareASession()
+    {
+        // Two principals whose isolation keys differ only in case. Partitions compare ordinally, but the
+        // default file systems of macOS and Windows do not — a directory named after the escaped text would
+        // be shared there. Checked on the directory names as well, so the test means the same on Linux.
+        var store = NewStore();
+        var agent = NewAgent();
+        var alice = new AgentSessionStoreKey("thread_abc123").WithPartition("isolation", "Alice");
+        var lowerAlice = new AgentSessionStoreKey("thread_abc123").WithPartition("isolation", "alice");
+        await store.SaveSessionAsync(agent, alice, await agent.CreateSessionAsync());
+
+        Assert.NotNull(await store.GetSessionAsync(agent, alice));
+        Assert.Null(await store.GetSessionAsync(agent, lowerAlice));
+
+        await store.SaveSessionAsync(agent, lowerAlice, await agent.CreateSessionAsync());
+        var directories = Directory.GetFiles(this.pathBase, "*.json", SearchOption.AllDirectories)
+            .Select(file => Path.GetFileName(Path.GetDirectoryName(file))!)
+            .ToList();
+        Assert.Equal(2, directories.Distinct(StringComparer.OrdinalIgnoreCase).Count());
+    }
+
+    [Fact]
+    public async Task PartitionNames_ArePartOfTheIdentity()
     {
         var store = NewStore();
         var agent = NewAgent();
-        await store.SaveSessionAsync(agent, "thread_abc123", await agent.CreateSessionAsync());
+        await store.SaveSessionAsync(agent, new AgentSessionStoreKey("thread_abc123").WithPartition("user", "a"), await agent.CreateSessionAsync());
 
-        await store.DeleteSessionAsync(agent, "thread_abc123");
+        Assert.Null(await store.GetSessionAsync(agent, new AgentSessionStoreKey("thread_abc123").WithPartition("tenant", "a")));
+    }
 
-        Assert.Empty(Directory.GetFiles(this.pathBase));
+    [Fact]
+    public async Task PartitionOrder_IsIrrelevant()
+    {
+        var store = NewStore();
+        var agent = NewAgent();
+        await store.SaveSessionAsync(agent,
+            new AgentSessionStoreKey("thread_abc123").WithPartition("b", "2").WithPartition("a", "1"),
+            await agent.CreateSessionAsync());
+
+        Assert.NotNull(await store.GetSessionAsync(agent,
+            new AgentSessionStoreKey("thread_abc123").WithPartition("a", "1").WithPartition("b", "2")));
+    }
+
+    [Fact]
+    public async Task PartitionSeparatorsInsideValues_DoNotCollide()
+    {
+        var store = NewStore();
+        var agent = NewAgent();
+        var oneValue = new AgentSessionStoreKey("thread_abc123").WithPartition("a", "1&b=2");
+        await store.SaveSessionAsync(agent, oneValue, await agent.CreateSessionAsync());
+
+        Assert.Null(await store.GetSessionAsync(agent,
+            new AgentSessionStoreKey("thread_abc123").WithPartition("a", "1").WithPartition("b", "2")));
+    }
+
+    [Theory]
+    [InlineData("../../../../etc", 0, 13)]
+    [InlineData("a/b", 5000, 13)]
+    [InlineData("tenant", 0, 5000)]
+    public async Task AHostileOrOverlongPartitionedKey_StaysInsideThePathBase(string value, int valuePadding, int sessionIdLength)
+    {
+        // The partition value and, inside the partition directory, the session id: both untrusted, both unbounded.
+        var store = NewStore();
+        var agent = NewAgent();
+        var key = new AgentSessionStoreKey(new string('t', sessionIdLength))
+            .WithPartition("isolation", value + new string('x', valuePadding));
+
+        await store.SaveSessionAsync(agent, key, await agent.CreateSessionAsync());
+
+        Assert.NotNull(await store.GetSessionAsync(agent, key));
+        var written = Assert.Single(Directory.GetFiles(this.pathBase, "*.json", SearchOption.AllDirectories));
+        Assert.StartsWith(Path.GetFullPath(this.pathBase), Path.GetFullPath(written));
     }
 
     [Theory]
@@ -68,7 +146,7 @@ public class FileSystemSessionStoreTests : IDisposable
         var store = NewStore();
         var agent = NewAgent();
 
-        await store.SaveSessionAsync(agent, sessionStoreId, await agent.CreateSessionAsync());
+        await store.SaveSessionAsync(agent, new AgentSessionStoreKey(sessionStoreId), await agent.CreateSessionAsync());
 
         var written = Assert.Single(Directory.GetFiles(this.pathBase));
         Assert.Equal(
@@ -76,7 +154,7 @@ public class FileSystemSessionStoreTests : IDisposable
             Path.GetFullPath(Path.GetDirectoryName(written)!));
 
         // And it is still the same session on the way back out.
-        Assert.NotNull(await store.GetSessionAsync(agent, sessionStoreId));
+        Assert.NotNull(await store.GetSessionAsync(agent, new AgentSessionStoreKey(sessionStoreId)));
     }
 
     [Fact]
@@ -87,7 +165,7 @@ public class FileSystemSessionStoreTests : IDisposable
         var store = NewStore();
         var agent = NewAgent();
 
-        await store.SaveSessionAsync(agent, "thread_abc-123", await agent.CreateSessionAsync());
+        await store.SaveSessionAsync(agent, new AgentSessionStoreKey("thread_abc-123"), await agent.CreateSessionAsync());
 
         var written = Path.GetFileName(Assert.Single(Directory.GetFiles(this.pathBase)));
         Assert.Equal($"{agent.Id}_thread_abc-123.json", written);
@@ -99,8 +177,8 @@ public class FileSystemSessionStoreTests : IDisposable
         var store = NewStore();
         var agent = NewAgent();
 
-        await store.SaveSessionAsync(agent, "thread_one", await agent.CreateSessionAsync());
-        await store.SaveSessionAsync(agent, "thread_two", await agent.CreateSessionAsync());
+        await store.SaveSessionAsync(agent, new AgentSessionStoreKey("thread_one"), await agent.CreateSessionAsync());
+        await store.SaveSessionAsync(agent, new AgentSessionStoreKey("thread_two"), await agent.CreateSessionAsync());
 
         Assert.Equal(2, Directory.GetFiles(this.pathBase).Length);
     }
@@ -109,9 +187,10 @@ public class FileSystemSessionStoreTests : IDisposable
     // Long enough that no per-part budget could accommodate it.
     [InlineData(5000, 'x')]
     // The subtler one, and the reason the bound is on the escaped length rather than the raw length:
-    // 80 characters is well inside any raw-length budget, but Uri.EscapeDataString expands each space
-    // to %20, so the escaped form is 240 characters and the composed name is over the limit.
-    [InlineData(80, ' ')]
+    // 80 characters is well inside any raw-length budget, but Uri.EscapeDataString expands each '/'
+    // to %2F, so the escaped form is 240 characters and the composed name is over the limit. (Not
+    // spaces: an all-whitespace id is rejected by AgentSessionStoreKey itself.)
+    [InlineData(80, '/')]
     public async Task AnOverlongSessionStoreId_StillSaves_UnderAFileNameTheFileSystemAccepts(int length, char fill)
     {
         // Unbounded on the wire: RunAgentInput.ThreadId reaches this store verbatim, and MapAGUIServer
@@ -123,7 +202,7 @@ public class FileSystemSessionStoreTests : IDisposable
         var agent = NewAgent();
         var sessionStoreId = new string(fill, length);
 
-        await store.SaveSessionAsync(agent, sessionStoreId, await agent.CreateSessionAsync());
+        await store.SaveSessionAsync(agent, new AgentSessionStoreKey(sessionStoreId), await agent.CreateSessionAsync());
 
         var written = Path.GetFileName(Assert.Single(Directory.GetFiles(this.pathBase)));
 
@@ -136,12 +215,12 @@ public class FileSystemSessionStoreTests : IDisposable
             $"component limit: {written}");
 
         // Deterministic, or a session saved under a long id could never be found again.
-        await store.SaveSessionAsync(agent, sessionStoreId, await agent.CreateSessionAsync());
+        await store.SaveSessionAsync(agent, new AgentSessionStoreKey(sessionStoreId), await agent.CreateSessionAsync());
         Assert.Equal(written, Path.GetFileName(Assert.Single(Directory.GetFiles(this.pathBase))));
 
         // And it is a session on the way back out, not a fresh one — the same id resolves to the same
         // file for reads as for writes.
-        Assert.NotNull(await store.GetSessionAsync(agent, sessionStoreId));
+        Assert.NotNull(await store.GetSessionAsync(agent, new AgentSessionStoreKey(sessionStoreId)));
     }
 
     [Fact]
@@ -154,7 +233,7 @@ public class FileSystemSessionStoreTests : IDisposable
         var agent = NewAgent();
         var sessionStoreId = new string('x', 100);
 
-        await store.SaveSessionAsync(agent, sessionStoreId, await agent.CreateSessionAsync());
+        await store.SaveSessionAsync(agent, new AgentSessionStoreKey(sessionStoreId), await agent.CreateSessionAsync());
 
         Assert.Equal(
             $"{agent.Id}_{sessionStoreId}.json",
@@ -169,8 +248,8 @@ public class FileSystemSessionStoreTests : IDisposable
         var store = NewStore();
         var agent = NewAgent();
 
-        await store.SaveSessionAsync(agent, new string('x', 5000), await agent.CreateSessionAsync());
-        await store.SaveSessionAsync(agent, new string('y', 5000), await agent.CreateSessionAsync());
+        await store.SaveSessionAsync(agent, new AgentSessionStoreKey(new string('x', 5000)), await agent.CreateSessionAsync());
+        await store.SaveSessionAsync(agent, new AgentSessionStoreKey(new string('y', 5000)), await agent.CreateSessionAsync());
 
         Assert.Equal(2, Directory.GetFiles(this.pathBase).Length);
     }
@@ -184,7 +263,7 @@ public class FileSystemSessionStoreTests : IDisposable
         var store = NewStore();
         var agent = new RenamedAgent(NewAgent(), new string('a', 5000));
 
-        await store.SaveSessionAsync(agent, "thread_abc123", await agent.CreateSessionAsync());
+        await store.SaveSessionAsync(agent, new AgentSessionStoreKey("thread_abc123"), await agent.CreateSessionAsync());
 
         var written = Path.GetFileName(Assert.Single(Directory.GetFiles(this.pathBase)));
         Assert.True(

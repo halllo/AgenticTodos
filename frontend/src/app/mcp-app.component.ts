@@ -14,7 +14,7 @@ import {
   buildAllowAttribute,
   RESOURCE_MIME_TYPE,
 } from '@modelcontextprotocol/ext-apps/app-bridge';
-import type { CallToolResult } from '@modelcontextprotocol/sdk/types.js';
+import type { CallToolResult } from '@modelcontextprotocol/client';
 import { McpClientService } from './mcp-client.service';
 import { HOST_STYLE_VARIABLES } from './host-styles';
 

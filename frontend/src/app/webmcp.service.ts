@@ -2,11 +2,11 @@ import { Injectable, signal } from '@angular/core';
 
 // Ensure the Web Model Context polyfill executes.
 // If this is imported only as types elsewhere, TS/Angular can erase it and
-// navigator.modelContext will remain undefined.
+// document.modelContext will remain undefined.
 import '@mcp-b/global';
 
 import { TabClientTransport } from '@mcp-b/transports';
-import { Client } from '@modelcontextprotocol/sdk/client';
+import { Client } from '@modelcontextprotocol/client';
 
 @Injectable({ providedIn: 'root' })
 export class WebmcpService {
@@ -19,7 +19,7 @@ export class WebmcpService {
   private toolRegistrationController = new AbortController();
 
   registerTool(registerableTool: { name: string; description: string, inputSchema?: any, execute: (args: Record<string, any>) => Promise<string> }) {
-    const webmcp = navigator.modelContext;
+    const webmcp = document.modelContext;
     if (webmcp) {
       webmcp.registerTool({
         name: registerableTool.name,
@@ -39,7 +39,7 @@ export class WebmcpService {
       this.registeredTools.push(registerableTool.name);
       console.log("WebMCP tool registered", registerableTool.name);
     } else {
-      console.log("WebMCP context not found; tool not registered.", navigator.modelContext);
+      console.log("WebMCP context not found; tool not registered.", document.modelContext);
     }
   }
 

@@ -88,7 +88,7 @@ at Amazon.Runtime.HttpWebRequestMessage.ProcessHttpResponseMessage(HttpResponseM
 
 Copilot Kit supports AG-UI very well but requires next.js, and there is currently no functional Angular support. So we glue `@ag-ui/client` together ourselves: [AgentSubscriber](https://docs.ag-ui.com/sdk/js/client/subscriber) handlers implemented directly, mapped back to the angular frontend in [chat.component.ts](frontend/src/app/chat.component.ts). `@ag-ui/core` is deliberately *not* a direct dependency — nothing in the frontend imports it, and `@ag-ui/client` pins it to its own exact version anyway.
 
-`npm audit` in `frontend/` currently reports **6 moderate** advisories, no high or critical ones, none in `@ag-ui/*`: all six are the same `@hono/node-server` path-traversal advisory (`GHSA-frvp-7c67-39w9`), reached through `@modelcontextprotocol/sdk`, which `@mcp-b/global` / `@mcp-b/transports` and `@angular/cli` pull in.
+`npm audit` in `frontend/` currently reports **no** advisories. (The earlier `@hono/node-server` path-traversal advisory, `GHSA-frvp-7c67-39w9`, came in through the v1 `@modelcontextprotocol/sdk`, which is gone since the move to the split v2 packages.)
 
 ### ✅ AG-UI endpoint mappings do not support per-request agent selection
 
@@ -106,7 +106,7 @@ Three details it has to get right, all because `MapAGUIServer` captures it **onc
 
 Both halves of the session file name (`{agent.Id}_{threadId}`) are `Uri.EscapeDataString`-escaped *and* length-bounded (an over-long half becomes a truncated SHA-256, keeping under the 255-byte component limit) because `RunAgentInput.ThreadId` arrives verbatim off the wire and the resulting `File.Create` failure would be unreportable — it happens in `SaveSessionAsync`, after the SSE response is committed. Why each guard, in the XML docs on [backend/FileSystemSessionStore.cs](backend/FileSystemSessionStore.cs); pinned by [`FileSystemSessionStoreTests`](tests/FileSystemSessionStoreTests.cs).
 
-The `threadId` still comes straight off the wire, so anyone who guesses one resumes that conversation: fine for a local experiment, not for a multi-user deployment, whose hook is `UseClaimsBasedSessionIsolation(...)` — after which the id reaching the store becomes `{key}::{threadId}`.
+The `threadId` still comes straight off the wire, so anyone who guesses one resumes that conversation: fine for a local experiment, not for a multi-user deployment, whose hook is registering an `AgentIsolationKeyProvider` (e.g. deriving the key from the user's claims) — after which every session key reaching the store carries an `isolation` partition, which `FileSystemSessionStore` stores in a directory of its own.
 
 ### ✅ A failing AG-UI request returned an HTTP 500 instead of an error event
 
@@ -156,7 +156,7 @@ AG-UI models the pause as an **interrupt**: the run ends with `RUN_FINISHED { ou
 
 The MCP relay shares the `/agents` prefix with the AG-UI endpoint, and the MCP Streamable HTTP transport needs `GET` (SSE) as well as `POST`; registered as a mapped endpoint (`app.Map("/agents/mcp-relay", ...)`) it answered `GET` with 405. Fixed by making the relay a terminal `app.Use()` middleware branch in [`backend/Program.cs`](backend/Program.cs), which short-circuits before endpoint execution. (`MapAGUIViaHttpRoutingAgent()` is not a catch-all — it maps a single `POST /agents/routed/{alias}/agui` — so the two can no longer compete for a path.)
 
-### ❌ AG-UI Client does not support Amazon Bedrock's parallel tool calls
+### ✅ AG-UI Client does not support Amazon Bedrock's parallel tool calls
 
 We have one backend and one frontend tool. Amazon Bedrock returns them as parallel tool calls, which AG-UI returns to the client, before it ends the run:
 
@@ -194,3 +194,8 @@ data: {"message":"Expected toolResult blocks at messages.4.content for the follo
 ![parallel tool calls fail](parallel-tool-calls-fail.png)
 
 OpenAI returns tool calls sequentually, which works fine. How can we make Amazon Bedrock return tool calls sequentually and not in parallel?
+
+Two separate causes, both fixed:
+
+- **Parallel client tool results** arrive as one AG-UI `tool` message each, while Bedrock wants every `toolResult` of a turn in a single message. [`ConsolidateToolResultsMiddleware`](backend/ConsolidateToolResultsMiddleware.cs) merges them.
+- **A turn mixing server and client tools** (the case above). `FunctionInvokingChatClient` runs *none* of a turn's calls once one of them is a client tool it cannot invoke, so the server call stays unanswered and every later request of the thread fails. Rather than making Bedrock call tools sequentially, [`ClientToolDeferralMiddleware`](backend/ClientToolDeferralMiddleware.cs), below the function-invocation loop, splits such a turn: the server calls run first (or prompt for approval), then the client calls go out as a turn of their own. From then on, each request to the model gets the turn back together, in transit only. Seen as two rounds, Claude on Bedrock once took a prompt demanding "one parallel step" as failed and retried five times; with the merge it answered in one round (both observed live, not pinned by a test). For a client that resends the full history, a client tool answered in that history is installed as an approval proxy, and a turn calling it is not split; the approval pipeline handles that case ([Sibling escalation](human-in-the-loop.md#sibling-escalation-one-extra-round-trip)). Details, limits and the in-memory state: the XML docs on the middleware; pinned by [`ClientToolDeferralMiddlewareTests`](tests/ClientToolDeferralMiddlewareTests.cs) and [`ToolApprovalSiblingEscalationTests`](tests/ToolApprovalSiblingEscalationTests.cs).

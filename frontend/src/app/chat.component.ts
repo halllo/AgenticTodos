@@ -1,6 +1,6 @@
 import { ChangeDetectionStrategy, Component, computed, effect, ElementRef, inject, linkedSignal, signal, untracked, viewChild } from '@angular/core';
 import { httpResource } from '@angular/common/http';
-import { buildResumeArray, HttpAgent, Interrupt, Message, ResumeEntry, RunAgentParameters } from "@ag-ui/client"
+import { buildResumeArray, contentToText, HttpAgent, Interrupt, Message, ResumeEntry, RunAgentParameters } from "@ag-ui/client"
 import { JsonPipe } from '@angular/common';
 import { form, FormField, required } from '@angular/forms/signals';
 import { WebmcpService } from './webmcp.service';
@@ -34,6 +34,36 @@ interface ApprovalToolCall {
 // Mirrors the library's own (unexported) ResumeResponse: what buildResumeArray expects per open
 // interrupt. `resolved` carries the answer, `cancelled` declines the interrupt without one.
 type ResumeResponse = { status: 'resolved'; payload?: unknown } | { status: 'cancelled' };
+
+/**
+ * The text a server-side tool result shows in its bubble. An MCP tool's result reaches the event as
+ * the serialized Microsoft.Extensions.AI content it was converted to, e.g.
+ * `{"text":"…","annotations":null,"additionalProperties":null}`, or as a list of those; the bubble
+ * shows just their text, like it does for a frontend tool's result. Anything else stays verbatim —
+ * in particular a tool's own JSON that merely has a `text` field next to others.
+ */
+function toolResultText(content: string): string {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(content);
+  } catch {
+    return content;
+  }
+  const items = Array.isArray(parsed) ? parsed : [parsed];
+  return items.length > 0 && items.every(isSerializedTextContent)
+    ? items.map(item => item['text']).join('\n')
+    : content;
+}
+
+/** Keys of a serialized Microsoft.Extensions.AI `TextContent` (`$type` only when written polymorphically). */
+const TEXT_CONTENT_KEYS = new Set(['$type', 'text', 'annotations', 'additionalProperties']);
+
+function isSerializedTextContent(value: unknown): value is { text: string } {
+  return isPlainObject(value)
+    && typeof value['text'] === 'string'
+    && Object.keys(value).every(key => TEXT_CONTENT_KEYS.has(key))
+    && (value['$type'] === undefined || value['$type'] === 'text');
+}
 
 /** Narrows untyped wire data to a JSON object — neither a primitive nor an array. */
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -1024,7 +1054,7 @@ export class ChatComponent {
         // transcript instead of a server tool showing only `name(args)` with an empty body.
         this.messages.update(msgs => msgs.map(msg =>
           msg.role === 'tool' && msg.toolCallId === event.toolCallId
-            ? { ...msg, content: event.content }
+            ? { ...msg, content: toolResultText(contentToText(event.content)) }
             : msg
         ));
       },

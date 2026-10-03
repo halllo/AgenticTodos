@@ -1,8 +1,6 @@
 import { Injectable } from '@angular/core';
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js';
-import { SSEClientTransport } from '@modelcontextprotocol/sdk/client/sse.js';
-import type { Resource, Tool } from '@modelcontextprotocol/sdk/types.js';
+import { Client, SSEClientTransport, StreamableHTTPClientTransport } from '@modelcontextprotocol/client';
+import type { Resource, Tool } from '@modelcontextprotocol/client';
 
 export interface McpServerInfo {
   client: Client;

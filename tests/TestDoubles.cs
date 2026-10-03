@@ -74,12 +74,39 @@ internal sealed class SilentChatClient : IChatClient
 /// </summary>
 internal sealed class ThrowingSessionStore : AgentSessionStore
 {
-    public override ValueTask<AgentSession> GetSessionAsync(AIAgent agent, string sessionStoreId, CancellationToken cancellationToken = default)
+    public override ValueTask<AgentSession?> GetSessionAsync(AIAgent agent, AgentSessionStoreKey key, CancellationToken cancellationToken = default)
         => throw new NotSupportedException();
 
-    public override ValueTask SaveSessionAsync(AIAgent agent, string sessionStoreId, AgentSession session, CancellationToken cancellationToken = default)
+    public override ValueTask SaveSessionAsync(AIAgent agent, AgentSessionStoreKey key, AgentSession session, CancellationToken cancellationToken = default)
         => throw new NotSupportedException();
+}
 
-    public override ValueTask DeleteSessionAsync(AIAgent agent, string sessionStoreId, CancellationToken cancellationToken = default)
-        => throw new NotSupportedException();
+internal static class JsonAssert
+{
+    /// <summary>
+    /// Fails with the path of the first <c>null</c> anywhere in <paramref name="element"/>, nested objects and
+    /// arrays included — @ag-ui/client rejects an optional field written as null at any depth.
+    /// </summary>
+    internal static void NoNulls(JsonElement element, string path = "$")
+    {
+        switch (element.ValueKind)
+        {
+            case JsonValueKind.Null:
+                Assert.Fail($"null at {path}");
+                break;
+            case JsonValueKind.Object:
+                foreach (var property in element.EnumerateObject())
+                {
+                    NoNulls(property.Value, $"{path}.{property.Name}");
+                }
+                break;
+            case JsonValueKind.Array:
+                var index = 0;
+                foreach (var item in element.EnumerateArray())
+                {
+                    NoNulls(item, $"{path}[{index++}]");
+                }
+                break;
+        }
+    }
 }

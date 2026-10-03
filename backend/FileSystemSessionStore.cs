@@ -11,11 +11,10 @@ namespace AgenticTodos.Backend;
 /// backend restart.
 /// </summary>
 /// <remarks>
-/// The parameter name matches the base class: what arrives here is a <i>session store id</i>, not a
-/// conversation id the app chose. It reaches this store as the client's <c>RunAgentInput.ThreadId</c>
-/// verbatim, and the SDK's contract is to treat it as opaque — no parsing, no character-set or length
-/// constraints. Since it becomes half of a file name, <see cref="GetPath"/> escapes and bounds it
-/// rather than validating it.
+/// The key's <see cref="AgentSessionStoreKey.SessionId"/> is not a conversation id the app chose: it
+/// reaches this store as the client's <c>RunAgentInput.ThreadId</c> verbatim, and the SDK's contract is to
+/// treat it as opaque — no parsing, no character-set or length constraints. Since it becomes half of a
+/// file name, <see cref="GetPath(string, string)"/> escapes and bounds it rather than validating it.
 /// </remarks>
 public class FileSystemSessionStore : AgentSessionStore
 {
@@ -29,13 +28,14 @@ public class FileSystemSessionStore : AgentSessionStore
 
     }
 
-    public override async ValueTask<AgentSession> GetSessionAsync(AIAgent agent, string sessionStoreId, CancellationToken cancellationToken = default)
+    public override async ValueTask<AgentSession?> GetSessionAsync(AIAgent agent, AgentSessionStoreKey key, CancellationToken cancellationToken = default)
     {
-        this.logger.LogInformation("Loading session {SessionStoreId}", sessionStoreId);
-        var path = GetPath(sessionStoreId, agent.Id);
+        this.logger.LogInformation("Loading session {SessionStoreId}", key.SessionId);
+        var path = GetPath(key, agent.Id);
         if (!File.Exists(path))
         {
-            return await agent.CreateSessionAsync(cancellationToken);
+            // The base class's GetOrCreateSessionAsync creates the fresh session.
+            return null;
         }
 
         using var stream = File.OpenRead(path);
@@ -43,25 +43,46 @@ public class FileSystemSessionStore : AgentSessionStore
         return await agent.DeserializeSessionAsync(sessionContent, cancellationToken: cancellationToken);
     }
 
-    public override async ValueTask SaveSessionAsync(AIAgent agent, string sessionStoreId, AgentSession session, CancellationToken cancellationToken = default)
+    public override async ValueTask SaveSessionAsync(AIAgent agent, AgentSessionStoreKey key, AgentSession session, CancellationToken cancellationToken = default)
     {
-        this.logger.LogInformation("Saving session {SessionStoreId}", sessionStoreId);
+        this.logger.LogInformation("Saving session {SessionStoreId}", key.SessionId);
         var serialized = await agent.SerializeSessionAsync(session, cancellationToken: cancellationToken);
-        Directory.CreateDirectory(this.pathBase);
-        using var stream = File.Create(GetPath(sessionStoreId, agent.Id));
+        var path = GetPath(key, agent.Id);
+        Directory.CreateDirectory(Path.GetDirectoryName(path)!);
+        using var stream = File.Create(path);
         await JsonSerializer.SerializeAsync(stream, serialized, cancellationToken: cancellationToken);
     }
 
-    public override ValueTask DeleteSessionAsync(AIAgent agent, string sessionStoreId, CancellationToken cancellationToken = default)
+    /// <summary>
+    /// Every partition of <paramref name="key"/> is part of the session's identity (the SDK's
+    /// contract), so a partitioned key gets its own subdirectory for its partitions. An unpartitioned
+    /// key — the only kind this app produces while no <c>AgentIsolationKeyProvider</c> is registered —
+    /// keeps the flat <c>{agentId}_{sessionId}.json</c> layout, so existing session files stay readable.
+    /// <para>
+    /// The directory is named by a lowercase SHA-256 of the partitions, not by their escaped text:
+    /// partitions are compared ordinally, but APFS and NTFS by default are not case-sensitive, so
+    /// <c>isolation=Alice</c> and <c>isolation=alice</c> — two principals — would share one directory and
+    /// read each other's sessions. Names and values are escaped before being joined, which keeps the
+    /// <c>=</c> and <c>&amp;</c> separators unambiguous in what is hashed.
+    /// </para>
+    /// <para>
+    /// The session id itself is only escaped, so on such a file system ids that differ only in case share
+    /// a file. That is no new exposure — knowing a thread id is already enough to resume it (see
+    /// <see cref="AGUIEndpoint.AddAGUISessionStore"/>) — and the ids real clients send are lowercase GUIDs.
+    /// </para>
+    /// </summary>
+    private string GetPath(AgentSessionStoreKey key, string agentId)
     {
-        this.logger.LogInformation("Deleting session {SessionStoreId}", sessionStoreId);
-        var path = GetPath(sessionStoreId, agent.Id);
-        if (File.Exists(path))
+        if (key.Partitions is not { Count: > 0 } partitions)
         {
-            File.Delete(path);
+            return GetPath(key.SessionId, agentId);
         }
 
-        return ValueTask.CompletedTask;
+        var canonical = string.Join('&', partitions
+            .OrderBy(p => p.Key, StringComparer.Ordinal)
+            .Select(p => $"{Uri.EscapeDataString(p.Key)}={Uri.EscapeDataString(p.Value)}"));
+        var partitionDirectory = Convert.ToHexStringLower(SHA256.HashData(Encoding.UTF8.GetBytes(canonical)));
+        return Path.Combine(this.pathBase, "partitioned", partitionDirectory, $"{Bound(agentId)}_{Bound(key.SessionId)}.json");
     }
 
     /// <summary>
@@ -91,7 +112,7 @@ public class FileSystemSessionStore : AgentSessionStore
     /// i.e. once the SSE response is committed and <see cref="AguiRunErrorMiddleware"/> can no longer
     /// report anything. The pre-stream path does not catch it first either:
     /// <see cref="File.Exists"/> answers false for an over-long path <i>without</i> throwing, so
-    /// <see cref="GetSessionAsync"/> just starts a fresh session.
+    /// <see cref="GetSessionAsync"/> just reports no session and a fresh one is started.
     /// </para>
     /// </summary>
     private string GetPath(string sessionStoreId, string agentId) =>

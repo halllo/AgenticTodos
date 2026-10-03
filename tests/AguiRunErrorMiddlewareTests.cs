@@ -45,6 +45,17 @@ public class AguiRunErrorMiddlewareTests
     }
 
     [Fact]
+    public async Task Events_CarryNoNullProperties()
+    {
+        // Since AG-UI 1.0 the app's JSON options decide whether nulls are written (see
+        // AGUIEndpoint.ConfigureAguiJson). @ag-ui/client's schemas reject e.g. `"usage": null` on
+        // RUN_ERROR with a ZodError, which aborts the run instead of showing the error.
+        var (events, _) = await RunAsync(_ => throw new AguiClientException("boom"));
+
+        Assert.All(events, e => JsonAssert.NoNulls(e));
+    }
+
+    [Fact]
     public async Task UnexpectedFailure_IsReportedGenerically()
     {
         // Only AguiClientException's text is meant for the wire. A provider credential message or a DI

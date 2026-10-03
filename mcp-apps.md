@@ -84,7 +84,7 @@ Conventions: the `ui://` URI scheme; MIME type `text/html;profile=mcp-app`, whic
 
 ## Frontend (`frontend/`)
 
-Key packages ([frontend/package.json](frontend/package.json) pins versions): `@ag-ui/client`, `@modelcontextprotocol/sdk`, `@modelcontextprotocol/ext-apps`, `@mcp-b/global` / `@mcp-b/transports`, Angular — and deliberately not `@ag-ui/core` ([README.md](README.md)).
+Key packages ([frontend/package.json](frontend/package.json) pins versions): `@ag-ui/client`, `@modelcontextprotocol/client` (MCP SDK v2, which `@modelcontextprotocol/ext-apps` 2.x and `@mcp-b/*` 5.x are built on), `@modelcontextprotocol/ext-apps`, `@mcp-b/global` / `@mcp-b/transports`, Angular — and deliberately not `@ag-ui/core` ([README.md](README.md)).
 
 **`McpClientService`** ([frontend/src/app/mcp-client.service.ts](frontend/src/app/mcp-client.service.ts)): `providedIn: 'root'` singleton, connects once (`infoPromise ??= connect()`) to `/agents/mcp-relay` — `StreamableHTTPClientTransport`, falling back to `SSEClientTransport` — exposing the MCP `Client`, maps of tools/resources, an `appHtmlCache`.
 

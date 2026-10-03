@@ -60,9 +60,13 @@ public class AguiRunErrorClientContractTests
     [MemberData(nameof(Positions))]
     public async Task AppendedRunError_ReachesTheClient(string position, string stream)
     {
-        var failure = await Assert.ThrowsAnyAsync<Exception>(() => DrainAsync(stream + AppendedError));
+        // Since AGUI.Client 1.0 a RUN_ERROR is not thrown but delivered as an update carrying
+        // ErrorContent (the CLI rethrows it to reach its failed-run handling).
+        var updates = await DrainAsync(stream + AppendedError);
 
-        Assert.Contains("The agent run failed.", Flatten(failure));
+        var error = Assert.Single(updates.SelectMany(u => u.Contents).OfType<Microsoft.Extensions.AI.ErrorContent>());
+        Assert.Equal("The agent run failed.", error.Message);
+        Assert.Equal("StreamError", error.ErrorCode);
         Assert.False(string.IsNullOrEmpty(position));
     }
 
@@ -91,18 +95,6 @@ public class AguiRunErrorClientContractTests
         }
 
         return updates;
-    }
-
-    /// <summary>Flattens an exception chain — the client may wrap the RUN_ERROR before rethrowing.</summary>
-    private static string Flatten(Exception? exception)
-    {
-        var text = new StringBuilder();
-        for (; exception is not null; exception = exception.InnerException)
-        {
-            text.Append(exception.Message).Append(' ');
-        }
-
-        return text.ToString();
     }
 
     private sealed class ScriptedSseHandler(string sse) : HttpMessageHandler

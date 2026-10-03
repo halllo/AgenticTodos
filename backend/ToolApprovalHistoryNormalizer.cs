@@ -23,10 +23,12 @@ namespace AgenticTodos.Backend;
 /// <para>
 /// Four repairs, all idempotent:
 /// <list type="number">
-/// <item><b>Scrub completed pairs</b> — approval requests/responses whose tool call already has a
-/// <see cref="FunctionResultContent"/> in history are removed; the recreated call/result pair is the
-/// canonical transcript the model providers need (an approval content would be dropped by their
-/// mappers anyway, leaving empty messages that e.g. Bedrock rejects).</item>
+/// <item><b>Scrub completed pairs</b> — approval requests/responses whose tool call has a
+/// <see cref="FunctionResultContent"/> in history or in the current turn are removed; the recreated
+/// call/result pair is the canonical transcript the model providers need (an approval content would be
+/// dropped by their mappers anyway, leaving empty messages that e.g. Bedrock rejects). A request that is
+/// the only record of its call — an escalated client-tool call, which the client executed and FICC never
+/// recreated — becomes that call instead, so its result does not reach the model without one.</item>
 /// <item><b>Drop re-supplied requests</b> — the AG-UI server SDK rebuilds a complete approval
 /// request/response pair from the client's <c>resume</c> payload, which duplicates the request this
 /// (session-backed) history already holds. FICC indexes approval requests by id and throws
@@ -59,7 +61,10 @@ internal static class ToolApprovalHistoryNormalizer
 
         var requestMessageList = requestMessages as IReadOnlyCollection<ChatMessage> ?? requestMessages?.ToList() ?? [];
 
+        // Results arriving with this turn count too: a client answers an escalated client-tool call with a tool
+        // message, so its result is in the request, not yet in the history.
         var completedCallIds = history
+            .Concat(requestMessageList)
             .SelectMany(m => m.Contents)
             .OfType<FunctionResultContent>()
             .Select(r => r.CallId)
@@ -89,6 +94,16 @@ internal static class ToolApprovalHistoryNormalizer
         // newer copy of the same request id supersedes.
         if (completedCallIds.Count > 0 || resuppliedRequestIds.Count > 0 || supersededRequests.Count > 0)
         {
+            // Calls the history carries as such. A completed request whose call is not among them is the only
+            // record of that call — an escalated client-tool call, which the client executed, so FICC never
+            // recreated it — and becomes the call instead of disappearing: its result would otherwise reach the
+            // model without one, which Bedrock rejects.
+            var recordedCallIds = history
+                .SelectMany(m => m.Contents)
+                .OfType<FunctionCallContent>()
+                .Select(c => c.CallId)
+                .ToHashSet(StringComparer.Ordinal);
+
             for (var i = history.Count - 1; i >= 0; i--)
             {
                 var message = history[i];
@@ -97,7 +112,10 @@ internal static class ToolApprovalHistoryNormalizer
                     continue;
                 }
 
-                var kept = message.Contents.Where(c => !IsStaleApprovalContent(c)).ToList();
+                var kept = message.Contents
+                    .Select(c => !IsStaleApprovalContent(c) ? c : SoleRecordOfCall(c, recordedCallIds))
+                    .OfType<AIContent>()
+                    .ToList();
                 if (kept.Count == 0)
                 {
                     history.RemoveAt(i);
@@ -133,6 +151,16 @@ internal static class ToolApprovalHistoryNormalizer
         }
 
         return;
+
+        // The call a completed request stands for, when nothing else in the history records it; null otherwise.
+        AIContent? SoleRecordOfCall(AIContent content, HashSet<string> recordedCallIds) =>
+            content is ToolApprovalRequestContent { ToolCall: FunctionCallContent call } request
+            && completedCallIds.Contains(call.CallId)
+            && !resuppliedRequestIds.Contains(request.RequestId)
+            && !supersededRequests.Contains(request)
+            && recordedCallIds.Add(call.CallId)
+                ? call
+                : null;
 
         bool IsStaleApprovalContent(AIContent content) => content switch
         {

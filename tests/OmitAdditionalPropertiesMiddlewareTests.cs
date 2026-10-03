@@ -31,6 +31,21 @@ public class OmitAdditionalPropertiesMiddlewareTests
     }
 
     [Fact]
+    public async Task TheCallersOptions_AreLeftIntact()
+    {
+        // FunctionInvokingChatClient passes the same ChatOptions to every round-trip of a run, and the
+        // clients above this one read RunAgentInput off them each time (ClientToolDeferralMiddleware keys
+        // its state by the AG-UI thread id). Stripped in place, it would be gone from the second round-trip.
+        var input = new RunAgentInput { ThreadId = "t", RunId = "r" };
+        var options = new ChatOptions { AdditionalProperties = new() { { "agui_input", input } } };
+
+        var seen = await CaptureAsync(options);
+
+        Assert.Empty(seen!);
+        Assert.Same(input, options.AdditionalProperties["agui_input"]);
+    }
+
+    [Fact]
     public async Task UnrelatedProperties_Survive()
     {
         var options = new ChatOptions

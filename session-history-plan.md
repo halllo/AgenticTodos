@@ -27,12 +27,14 @@ Two directories, created lazily at first write via `Directory.CreateDirectory`. 
 
 | Directory | File naming | Content |
 | --- | --- | --- |
-| `AgentSessions/` | `{agentId}_{sessionStoreId}.json` | Serialized `AgentSession` object |
+| `AgentSessions/` | `{agentId}_{sessionId}.json` | Serialized `AgentSession` object |
+| `AgentSessions/partitioned/{sha256}/` | `{agentId}_{sessionId}.json` | The same, for a key with partitions (only once an `AgentIsolationKeyProvider` is registered) |
 | `ChatHistories/` | `{storeId}_full.json` | Accumulated `ChatMessage[]` array |
 | `ChatHistories/` | `{storeId}_compacted.json` | Optionally reduced/summarized messages |
 
 - **`agentId`** — `AIAgent.Id`; for the routing agent computed per request from the route (`routed-{alias}`), not at construction (`IdCore`, Step 4)
-- **`sessionStoreId`** — the AG-UI `threadId`, and the base class's name for it: opaque client input by contract, hence escaped and bounded (Step 2)
+- **`sessionId`** — `AgentSessionStoreKey.SessionId`, i.e. the AG-UI `threadId`: opaque client input by contract, hence escaped and bounded (Step 2)
+- **`sha256`** — lowercase hex SHA-256 of the key's partitions; a hash rather than their text, because partitions compare case-sensitively and the default file systems of macOS and Windows do not (Step 2)
 - **`storeId`** — a `Guid` per conversation, held in the `AgentSession`, linking it to its history files
 
 ---
@@ -47,10 +49,13 @@ Loads or creates the `AgentSession` per conversation — an opaque framework obj
 // ctor: (ILogger<FileSystemSessionStore> logger, string pathBase = "AgentSessions")
 public class FileSystemSessionStore : AgentSessionStore
 {
-    // GetSessionAsync, SaveSessionAsync and DeleteSessionAsync are all abstract on the base, so all three
-    // must be implemented — each (AIAgent agent, string sessionStoreId, …, CancellationToken), logging
-    // a LogInformation of {SessionStoreId}, plain File.* I/O around
-    // agent.Create/Deserialize/SerializeSessionAsync (delete returning ValueTask.CompletedTask).
+    // GetSessionAsync and SaveSessionAsync are abstract on the base (Microsoft.Agents.AI 1.23+; marked
+    // [Experimental] MAAI001, suppressed in the csproj) — each (AIAgent agent, AgentSessionStoreKey key,
+    // …, CancellationToken), logging a LogInformation of {SessionStoreId}, plain File.* I/O around
+    // agent.Deserialize/SerializeSessionAsync. GetSessionAsync returns null for an unknown session; the
+    // base's GetOrCreateSessionAsync then creates one. Every key partition is part of the identity, so a
+    // partitioned key (only produced once an isolation key provider is registered) gets its own
+    // subdirectory, while an unpartitioned one keeps the flat layout below.
 
     // Keyed by agent.Id, so that id must be stable across restarts and distinct per agent (Step 4's
     // IdCore). Both halves go through Bound(): Uri.EscapeDataString, with a truncated SHA-256 of the
@@ -58,7 +63,7 @@ public class FileSystemSessionStore : AgentSessionStore
     // and both failures surface only inside SaveSessionAsync — after the SSE response is committed, where
     // error middleware can no longer report anything. Arithmetic, exception per case, and why escaping
     // rather than validating: the XML docs on this file, plus README.md.
-    private string GetPath(string sessionStoreId, string agentId) =>
+    private string GetPath(string sessionStoreId, string agentId) =>   // the unpartitioned case
         Path.Combine(this.pathBase, $"{Bound(agentId)}_{Bound(sessionStoreId)}.json");
 }
 ```
@@ -241,7 +246,7 @@ What to check by hand in a new project, and what this repo's tests pin — look 
 
 | Test file | Pins |
 | --- | --- |
-| [`FileSystemSessionStoreTests`](tests/FileSystemSessionStoreTests.cs) | Step 2: save→get round trip, unknown session → fresh one, delete, distinct threads → distinct files, a hostile `sessionStoreId` not escaping the path base while an ordinary one stays readable |
+| [`FileSystemSessionStoreTests`](tests/FileSystemSessionStoreTests.cs) | Step 2: save→get round trip, unknown session → null (and a fresh one via `GetOrCreateSessionAsync`), partitions part of the identity, distinct threads → distinct files, a hostile `sessionStoreId` not escaping the path base while an ordinary one stays readable |
 | [`ChatHistoryProviderTests`](tests/ChatHistoryProviderTests.cs) | Step 3: transient messages dropped and never accumulating, everything else appended |
 | [`HttpContextRoutingAgentTests`](tests/HttpContextRoutingAgentTests.cs) | Step 4: the lookup awaited once per request, shared by concurrent callers; `IdCore` route-derived, alias-shaped only; `Name` as the session-store DI key; a session-less run taking the thread id from the AG-UI input and saving after (streaming: after drain); a run with a session never touching the store; one with neither failing |
 | [`AguiSessionStoreLifetimeTests`](tests/AguiSessionStoreLifetimeTests.cs) | `AddAGUISessionStore()`: the stand-in resolving from the root provider with a scoped real store, forwarding to the request's container, failing readably outside a request |

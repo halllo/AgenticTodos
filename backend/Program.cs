@@ -190,6 +190,11 @@ static AIAgent CreateAgent(IChatClient chatClient, AIFunction[] tools, IServiceP
     var applicationName = services.GetRequiredService<IHostEnvironment>().ApplicationName;
     var fileStore = services.GetRequiredService<IUploadedFileStore>();
     return chatClient
+        // Below the function-invocation loop, which ChatClientAgent wraps around the client it is given:
+        // splits a turn that calls server and client tools in parallel (see ClientToolDeferralMiddleware).
+        .AsBuilder()
+        .UseClientToolDeferral()
+        .Build(services)
         .AsAIAgent(
             options: new ChatClientAgentOptions
             {

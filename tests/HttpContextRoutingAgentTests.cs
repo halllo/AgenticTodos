@@ -271,20 +271,17 @@ public class HttpContextRoutingAgentTests
         public string? LastGetSessionId { get; private set; }
         public string? LastSaveSessionId { get; private set; }
 
-        public override async ValueTask<AgentSession> GetSessionAsync(AIAgent agent, string sessionStoreId, CancellationToken cancellationToken = default)
+        public override ValueTask<AgentSession?> GetSessionAsync(AIAgent agent, AgentSessionStoreKey key, CancellationToken cancellationToken = default)
         {
-            LastGetSessionId = sessionStoreId;
-            return await agent.CreateSessionAsync(cancellationToken);
+            LastGetSessionId = key.SessionId;
+            return ValueTask.FromResult<AgentSession?>(null);
         }
 
-        public override ValueTask SaveSessionAsync(AIAgent agent, string sessionStoreId, AgentSession session, CancellationToken cancellationToken = default)
+        public override ValueTask SaveSessionAsync(AIAgent agent, AgentSessionStoreKey key, AgentSession session, CancellationToken cancellationToken = default)
         {
-            LastSaveSessionId = sessionStoreId;
+            LastSaveSessionId = key.SessionId;
             return ValueTask.CompletedTask;
         }
-
-        public override ValueTask DeleteSessionAsync(AIAgent agent, string sessionStoreId, CancellationToken cancellationToken = default)
-            => ValueTask.CompletedTask;
     }
 
     /// <summary>Builds the internal routing agent the endpoint uses.</summary>

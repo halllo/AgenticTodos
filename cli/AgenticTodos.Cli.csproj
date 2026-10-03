@@ -16,11 +16,11 @@
   <ItemGroup>
     <PackageReference Include="CommandLineParser" Version="2.9.1" />
     <!-- AG-UI protocol + client SDK; replaced the discontinued Microsoft.Agents.AI.AGUI package. -->
-    <PackageReference Include="AGUI.Abstractions" Version="0.0.3" />
-    <PackageReference Include="AGUI.Client" Version="0.0.3" />
-    <PackageReference Include="Microsoft.Agents.AI" Version="1.15.0" />
-    <PackageReference Include="Microsoft.Extensions.AI" Version="10.8.3" />
-    <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.10" />
+    <PackageReference Include="AGUI.Abstractions" Version="1.0.0" />
+    <PackageReference Include="AGUI.Client" Version="1.0.0" />
+    <PackageReference Include="Microsoft.Agents.AI" Version="1.23.0" />
+    <PackageReference Include="Microsoft.Extensions.AI" Version="10.10.0" />
+    <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.12" />
     <PackageReference Include="Spectre.Console" Version="0.57.2" />
     <PackageReference Include="Spectre.Console.Json" Version="0.57.2" />
   </ItemGroup>
