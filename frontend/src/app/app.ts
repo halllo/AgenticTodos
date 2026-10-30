@@ -5,6 +5,24 @@ import { TodosComponent } from './todos.component';
 import { ResizerComponent } from './resizer.component';
 import { WebmcpService } from './webmcp.service';
 
+const TODOS_APP_URI = 'ui://todos/todos-app.html';
+
+/**
+ * The single HTML document an MCP app resource must be: a frontend app's bundle (built into public/ by
+ * `npm run build:apps`) inlined into a page, since the sandbox writes the HTML into a frame that
+ * cannot resolve the host's relative URLs.
+ */
+async function inlineAppHtml(title: string, scriptUrl: string): Promise<string> {
+  const response = await fetch(scriptUrl);
+  if (!response.ok) {
+    throw new Error(`Failed to load MCP app bundle ${scriptUrl}: ${response.status}`);
+  }
+  // `<\/script` keeps a literal `</script` inside the bundle from closing the inline script early.
+  const script = (await response.text()).replaceAll('</script', '<\\/script');
+  return `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8" /><title>${title}</title></head>`
+    + `<body><script type="module">${script}</script></body></html>`;
+}
+
 @Component({
   selector: 'app-root',
   imports: [RouterOutlet, ChatComponent, TodosComponent, ResizerComponent],
@@ -119,6 +137,24 @@ export class App implements OnInit, OnDestroy {
         }
         todos.addTodoWithTitle(title);
         return 'Success: Todo added.';
+      }
+    });
+
+    this.webmcp.registerAppResource({
+      uri: TODOS_APP_URI,
+      name: "todos_app",
+      html: () => inlineAppHtml('Todos', '/mcp-apps/todos-app.js'),
+    });
+    this.webmcp.registerAppTool({
+      name: "show_todos",
+      description: "Show the todo list from the left panel as an interactive app in the chat, where the user can also add todos. Returns the todos as JSON.",
+      resourceUri: TODOS_APP_URI,
+      execute: async () => {
+        const todos = this.todos();
+        if (!todos) {
+          return 'Error: Todo list not available.';
+        }
+        return JSON.stringify(todos.list());
       }
     });
 

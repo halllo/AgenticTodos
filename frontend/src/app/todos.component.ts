@@ -202,6 +202,10 @@ export class TodosComponent {
     this.newTodoTitle.set(value);
   }
 
+  public list(): readonly Todo[] {
+    return this.todos();
+  }
+
   public addTodoWithTitle(title: string): void {
     this.prependTodo(title);
   }

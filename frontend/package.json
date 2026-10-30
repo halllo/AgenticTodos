@@ -4,9 +4,10 @@
   "scripts": {
     "ng": "ng",
     "build:sandbox": "esbuild src/sandbox.ts --bundle --platform=browser --outfile=../backend/wwwroot/sandbox.js",
-    "start": "npm run build:sandbox && ng serve",
-    "dev": "npm run build:sandbox && ng serve",
-    "build": "npm run build:sandbox && ng build",
+    "build:apps": "esbuild src/mcp-apps/todos-app.ts --bundle --platform=browser --format=esm --minify --outfile=public/mcp-apps/todos-app.js",
+    "start": "npm run build:sandbox && npm run build:apps && ng serve",
+    "dev": "npm run build:sandbox && npm run build:apps && ng serve",
+    "build": "npm run build:sandbox && npm run build:apps && ng build",
     "watch": "ng build --watch --configuration development",
     "test": "ng test"
   },
@@ -34,8 +35,9 @@
     "@angular/router": "^22.2.4",
     "@mcp-b/global": "^6.0.3",
     "@mcp-b/transports": "^6.0.3",
-    "@modelcontextprotocol/ext-apps": "^2.0.4",
     "@modelcontextprotocol/client": "^2.4.0",
+    "@modelcontextprotocol/ext-apps": "^2.0.4",
+    "@modelcontextprotocol/server": "2.0.0",
     "rxjs": "~7.8.2",
     "tslib": "^2.8.1"
   },

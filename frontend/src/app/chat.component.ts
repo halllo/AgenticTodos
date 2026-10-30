@@ -102,6 +102,8 @@ interface MessageViewModel {
   interruptId?: string;
   toolInput?: Record<string, unknown>;
   toolResult?: unknown;
+  /** Where an activity's MCP app comes from: a server-side tool's snapshot, or a frontend tool run here. */
+  appSource?: 'server' | 'frontend';
   attachments?: Attachment[];
   risk?: RiskClassification;
   approval?: ApprovalViewModel;
@@ -182,6 +184,7 @@ interface MessageViewModel {
                   [resourceUri]="message.resourceUri!"
                   [toolInput]="message.toolInput ?? {}"
                   [toolResult]="message.toolResult"
+                  [source]="message.appSource ?? 'server'"
                 />
               } @else if (message.role === 'reasoning') {
                 <button
@@ -1128,6 +1131,7 @@ export class ChatComponent {
             messageId: event.messageId,
             toolInput,
             toolResult,
+            appSource: 'server',
           });
           return;
         }
@@ -1167,16 +1171,17 @@ export class ChatComponent {
           if (call.kind !== 'tool') {
             continue;
           }
+          let toolResult: unknown;
           try {
             // `args` is unset only if TOOL_CALL_END never arrived for this call; invoking with no
             // arguments still lets the tool reply with its own validation error, which is more useful
             // to the model than a silently skipped call.
             const invokeToolResponse = await this.webmcp.invokeTool(call.name, call.args);
-            call.result = typeof invokeToolResponse === 'string'
-              ? invokeToolResponse
-              : JSON.stringify(invokeToolResponse);
+            call.result = invokeToolResponse.text;
+            toolResult = invokeToolResponse.result;
           } catch (error) {
             call.result = 'Error: Tool execution failed.';
+            toolResult = { content: [{ type: 'text', text: call.result }], isError: true };
           }
 
           // Update the tool message with the result
@@ -1187,6 +1192,21 @@ export class ChatComponent {
                 : msg
             );
           });
+
+          // A frontend tool that declares an MCP app gets its card here, the way a server-side one gets
+          // it from the backend's mcp-apps ACTIVITY_SNAPSHOT — keyed by the tool call id the same way.
+          const resourceUri = this.webmcp.uiResourceUriFor(call.name);
+          if (resourceUri) {
+            this.upsertActivityMessage(call.id, {
+              role: 'activity',
+              content: '',
+              resourceUri,
+              messageId: call.id,
+              toolInput: call.args ?? {},
+              toolResult,
+              appSource: 'frontend',
+            });
+          }
         }
 
         // Hand the continuation to runAgent — see resumeRequested for why not from here.

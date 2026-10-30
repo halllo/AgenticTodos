@@ -14,8 +14,9 @@ import {
   buildAllowAttribute,
   RESOURCE_MIME_TYPE,
 } from '@modelcontextprotocol/ext-apps/app-bridge';
-import type { CallToolResult } from '@modelcontextprotocol/client';
+import type { CallToolResult, Client } from '@modelcontextprotocol/client';
 import { McpClientService } from './mcp-client.service';
+import { WebmcpService } from './webmcp.service';
 import { HOST_STYLE_VARIABLES } from './host-styles';
 
 // The outer sandbox iframe must be served from a different origin than the host.
@@ -54,12 +55,16 @@ export class McpAppComponent implements AfterViewInit, OnDestroy {
   resourceUri = input.required<string>();
   toolInput = input<Record<string, unknown>>({});
   toolResult = input<unknown>(null);
+  // Which MCP server serves the app's resource and answers its tool calls: the backend's MCP server
+  // through the relay, or the tab's WebMCP server for frontend tools.
+  source = input<'server' | 'frontend'>('server');
 
   @ViewChild('iframeEl') iframeRef!: ElementRef<HTMLIFrameElement>;
 
   displayMode = signal<'inline' | 'fullscreen'>('inline');
 
   private mcpClientService = inject(McpClientService);
+  private webmcp = inject(WebmcpService);
   private appBridge: AppBridge | null = null;
   private sandboxAbort = new AbortController();
   private iframeResizeObserver: ResizeObserver | null = null;
@@ -75,10 +80,10 @@ export class McpAppComponent implements AfterViewInit, OnDestroy {
   private async initApp(): Promise<void> {
     const iframe = this.iframeRef.nativeElement;
 
-    const serverInfo = await this.mcpClientService.getServerInfo();
+    const client = await this.resolveClient();
 
     // Read HTML + optional CSP/permissions metadata from the MCP resource
-    const resource = await serverInfo.client.readResource({ uri: this.resourceUri() });
+    const resource = await client.readResource({ uri: this.resourceUri() });
     const content = resource.contents[0];
 
     // Verify this is actually an MCP app resource before treating as HTML
@@ -99,12 +104,12 @@ export class McpAppComponent implements AfterViewInit, OnDestroy {
     if (!loaded) return;
 
     const appBridge = new AppBridge(
-      serverInfo.client,
+      client,
       { name: 'AgenticTodos', version: '1.0.0' },
       {
         openLinks: {},
-        serverTools: serverInfo.client.getServerCapabilities()?.tools,
-        serverResources: serverInfo.client.getServerCapabilities()?.resources,
+        serverTools: client.getServerCapabilities()?.tools,
+        serverResources: client.getServerCapabilities()?.resources,
         updateModelContext: { text: {} },
       },
       {
@@ -179,6 +184,17 @@ export class McpAppComponent implements AfterViewInit, OnDestroy {
     } else {
       appBridge.sendToolCancelled({ reason: 'No result available' });
     }
+  }
+
+  private async resolveClient(): Promise<Client> {
+    if (this.source() === 'server') {
+      return (await this.mcpClientService.getServerInfo()).client;
+    }
+    const client = this.webmcp.getClient();
+    if (!client) {
+      throw new Error('WebMCP client is not initialized.');
+    }
+    return client;
   }
 
   exitFullscreen(): void {
