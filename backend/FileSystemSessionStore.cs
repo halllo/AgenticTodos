@@ -53,6 +53,14 @@ public class FileSystemSessionStore : AgentSessionStore
         await JsonSerializer.SerializeAsync(stream, serialized, cancellationToken: cancellationToken);
     }
 
+    public override ValueTask DeleteSessionAsync(AIAgent agent, AgentSessionStoreKey key, CancellationToken cancellationToken = default)
+    {
+        this.logger.LogInformation("Deleting session {SessionStoreId}", key.SessionId);
+        // File.Delete is a no-op for a missing file, which is the SDK's contract for a missing session.
+        File.Delete(GetPath(key, agent.Id));
+        return ValueTask.CompletedTask;
+    }
+
     /// <summary>
     /// Every partition of <paramref name="key"/> is part of the session's identity (the SDK's
     /// contract), so a partitioned key gets its own subdirectory for its partitions. An unpartitioned

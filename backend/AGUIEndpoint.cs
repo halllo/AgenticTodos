@@ -247,6 +247,9 @@ public static class AGUIEndpoint
         public override ValueTask SaveSessionAsync(AIAgent agent, AgentSessionStoreKey key, AgentSession session, CancellationToken cancellationToken = default)
             => Current().SaveSessionAsync(agent, key, session, cancellationToken);
 
+        public override ValueTask DeleteSessionAsync(AIAgent agent, AgentSessionStoreKey key, CancellationToken cancellationToken = default)
+            => Current().DeleteSessionAsync(agent, key, cancellationToken);
+
         // GetService is deliberately not forwarded. MapAGUIServer queries the store at map time, from the
         // root provider (to see whether it is already isolation-scoped), where there is no request to
         // forward to — Current() would throw at startup. Answering for this instance alone only means a

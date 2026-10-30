@@ -79,6 +79,9 @@ internal sealed class ThrowingSessionStore : AgentSessionStore
 
     public override ValueTask SaveSessionAsync(AIAgent agent, AgentSessionStoreKey key, AgentSession session, CancellationToken cancellationToken = default)
         => throw new NotSupportedException();
+
+    public override ValueTask DeleteSessionAsync(AIAgent agent, AgentSessionStoreKey key, CancellationToken cancellationToken = default)
+        => throw new NotSupportedException();
 }
 
 internal static class JsonAssert

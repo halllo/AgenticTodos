@@ -123,6 +123,12 @@ public class AguiSessionStoreLifetimeTests
             SeenSessionStoreIds.Add(key.SessionId);
             return ValueTask.CompletedTask;
         }
+
+        public override ValueTask DeleteSessionAsync(AIAgent agent, AgentSessionStoreKey key, CancellationToken cancellationToken = default)
+        {
+            SeenSessionStoreIds.Add(key.SessionId);
+            return ValueTask.CompletedTask;
+        }
     }
 
     /// <summary>A real agent, so the store gets a real AgentSession; no model call is ever made.</summary>

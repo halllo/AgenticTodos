@@ -282,6 +282,9 @@ public class HttpContextRoutingAgentTests
             LastSaveSessionId = key.SessionId;
             return ValueTask.CompletedTask;
         }
+
+        public override ValueTask DeleteSessionAsync(AIAgent agent, AgentSessionStoreKey key, CancellationToken cancellationToken = default)
+            => ValueTask.CompletedTask;
     }
 
     /// <summary>Builds the internal routing agent the endpoint uses.</summary>
