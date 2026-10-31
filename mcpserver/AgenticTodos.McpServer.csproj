@@ -32,9 +32,15 @@
     <None Include="pdf-viewer-app\dist\**\*" CopyToOutputDirectory="PreserveNewest" />
   </ItemGroup>
 
+  <ItemGroup>
+    <Content Remove="a2ui-app\**" />
+    <None Remove="a2ui-app\**" />
+    <None Include="a2ui-app\dist\**\*" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
   <Target Name="BuildMcpApps" BeforeTargets="Build">
     <ItemGroup>
-      <McpApp Include="get-time-app;threejs-app;pdf-viewer-app" />
+      <McpApp Include="get-time-app;threejs-app;pdf-viewer-app;a2ui-app" />
     </ItemGroup>
     <Exec Command="npm install" WorkingDirectory="$(MSBuildProjectDirectory)\%(McpApp.Identity)" Condition="!Exists('$(MSBuildProjectDirectory)\%(McpApp.Identity)\node_modules')" />
     <Exec Command="npm run build" WorkingDirectory="$(MSBuildProjectDirectory)\%(McpApp.Identity)" />

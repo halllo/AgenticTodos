@@ -8,6 +8,7 @@ using Microsoft.Extensions.AI;
 using ModelContextProtocol.Client;
 using OpenAI;
 using Scalar.AspNetCore;
+using System.Text.Json.Nodes;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -241,7 +242,11 @@ static async Task<AIFunction[]> GetTools(IConfiguration configuration)
         Endpoint = new Uri($"{mcpBaseUrl.TrimEnd('/')}/mcp"),
         TransportMode = HttpTransportMode.StreamableHttp,
     }));
-    var mcpTools = await mcpClient.ListToolsAsync();
+    // MCP Apps: a tool whose _meta.ui.visibility leaves out "model" (e.g. ["app"]) is only callable from its app's
+    // UI, never offered to the LLM. A missing visibility means ["model", "app"].
+    var mcpTools = (await mcpClient.ListToolsAsync())
+        .Where(t => t.ProtocolTool.Meta?["ui"]?["visibility"] is not JsonArray visibility
+            || visibility.Any(v => v?.GetValue<string>() == "model"));
 
     // Tools listed under HumanInTheLoop:ApprovalRequiredTools pause for user approval before
     // executing (see human-in-the-loop.md). Works for local functions and MCP tools alike.

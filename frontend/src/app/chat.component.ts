@@ -5,6 +5,7 @@ import { JsonPipe } from '@angular/common';
 import { form, FormField, required } from '@angular/forms/signals';
 import { WebmcpService } from './webmcp.service';
 import { McpAppComponent } from './mcp-app.component';
+import { AppPanelService } from './app-panel.service';
 
 interface NewMessageViewModel {
   content: string;
@@ -179,13 +180,31 @@ interface MessageViewModel {
                 <br>
               }
               @if (message.role === 'activity') {
-                <span class="chat__toolIndicator">MCP App · {{ message.resourceUri }}</span>
-                <app-mcp-app
-                  [resourceUri]="message.resourceUri!"
-                  [toolInput]="message.toolInput ?? {}"
-                  [toolResult]="message.toolResult"
-                  [source]="message.appSource ?? 'server'"
-                />
+                <div class="chat__appHeader">
+                  <span class="chat__toolIndicator">MCP App · {{ message.resourceUri }}</span>
+                  @if (message.messageId) {
+                    @if (appPanel.isOpen(message.messageId)) {
+                      <button type="button" class="chat__appButton" (click)="appPanel.close(message.messageId)">
+                        Back to chat
+                      </button>
+                    } @else {
+                      <button type="button" class="chat__appButton" (click)="openInPanel(message)" title="Keep this app visible in a side panel">
+                        Open in side panel ⇥
+                      </button>
+                    }
+                  }
+                </div>
+                @if (appPanel.isOpen(message.messageId)) {
+                  <div class="chat__appPlaceholder">Shown in the side panel.</div>
+                } @else {
+                  <app-mcp-app
+                    [resourceUri]="message.resourceUri!"
+                    [toolInput]="message.toolInput ?? {}"
+                    [toolResult]="message.toolResult"
+                    [source]="message.appSource ?? 'server'"
+                    [sendMessage]="sendAppMessage"
+                  />
+                }
               } @else if (message.role === 'reasoning') {
                 <button
                   type="button"
@@ -686,6 +705,36 @@ interface MessageViewModel {
       color: #00796b;
     }
 
+    .chat__appHeader {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 0.5rem;
+      margin-bottom: 0.25rem;
+    }
+
+    .chat__appButton {
+      flex-shrink: 0;
+      border: 1px solid currentColor;
+      border-radius: var(--radius-sm);
+      background: transparent;
+      color: inherit;
+      font: inherit;
+      font-size: 0.8rem;
+      padding: 0.15rem 0.6rem;
+      cursor: pointer;
+
+      &:hover {
+        background: rgba(106, 27, 154, 0.08);
+      }
+    }
+
+    .chat__appPlaceholder {
+      padding: 0.5rem 0;
+      font-style: italic;
+      opacity: 0.8;
+    }
+
     .chat__message.chat__message--reasoning {
       .chat__content {
         width: 100%;
@@ -887,6 +936,7 @@ interface MessageViewModel {
 })
 export class ChatComponent {
   private readonly webmcp = inject(WebmcpService);
+  protected readonly appPanel = inject(AppPanelService);
   private readonly messagesContainer = viewChild<ElementRef>('messagesContainer');
 
   protected readonly newMessageViewModel = signal<NewMessageViewModel>({ content: '' });
@@ -1434,6 +1484,33 @@ export class ChatComponent {
     this.scrollToBottom();
 
     await this.runAgent();
+  }
+
+  /**
+   * An MCP app's `ui/message` (e.g. an A2UI button press) posted as a user turn. Refused under the same
+   * conditions as onSubmit, so the app can tell its user the message did not go out.
+   */
+  protected readonly sendAppMessage = async (text: string): Promise<boolean> => {
+    if (this.isLoading() || this.awaitingApproval()) {
+      return false;
+    }
+    this.messages.update(msgs => [...msgs, { role: 'user', content: text }]);
+    this.agent?.addMessages([{ id: "", role: 'user', content: text }]);
+    this.scrollToBottom();
+    void this.runAgent();
+    return true;
+  };
+
+  protected openInPanel(message: MessageViewModel): void {
+    // Apps in the side panel post their ui/message through the same path as those in the chat.
+    this.appPanel.messageHandler ??= this.sendAppMessage;
+    this.appPanel.open({
+      id: message.messageId!,
+      resourceUri: message.resourceUri!,
+      toolInput: message.toolInput ?? {},
+      toolResult: message.toolResult,
+      source: message.appSource ?? 'server',
+    });
   }
 
   protected async onFilesSelected(event: Event): Promise<void> {

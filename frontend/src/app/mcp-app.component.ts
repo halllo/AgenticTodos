@@ -58,6 +58,8 @@ export class McpAppComponent implements AfterViewInit, OnDestroy {
   // Which MCP server serves the app's resource and answers its tool calls: the backend's MCP server
   // through the relay, or the tab's WebMCP server for frontend tools.
   source = input<'server' | 'frontend'>('server');
+  // Delivers an app's ui/message to the chat as a user turn; resolves false when the chat cannot take it now.
+  sendMessage = input<(text: string) => Promise<boolean>>();
 
   @ViewChild('iframeEl') iframeRef!: ElementRef<HTMLIFrameElement>;
 
@@ -157,7 +159,12 @@ export class McpAppComponent implements AfterViewInit, OnDestroy {
 
     appBridge.onmessage = async (params) => {
       console.log('[McpAppComponent] Message from MCP App:', params);
-      return {};
+      const text = params.content
+        .flatMap(c => (c.type === 'text' ? [c.text] : []))
+        .join('\n');
+      const send = this.sendMessage();
+      const delivered = !!text && !!send && (await send(text));
+      return delivered ? {} : { isError: true };
     };
 
     appBridge.onloggingmessage = (params) => {

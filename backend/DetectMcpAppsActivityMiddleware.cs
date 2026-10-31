@@ -3,7 +3,9 @@ using System.Text;
 using System.Text.Json;
 using Microsoft.Agents.AI;
 using Microsoft.Extensions.AI;
+using ModelContextProtocol;
 using ModelContextProtocol.Client;
+using ModelContextProtocol.Protocol;
 
 namespace AgenticTodos.Backend;
 
@@ -101,13 +103,21 @@ internal static class DetectMcpAppsActivityMiddleware
 
     private static readonly JsonElement s_emptyObject = JsonDocument.Parse("{}").RootElement.Clone();
 
-    private static string SerializeResult(object? result) => result switch
+    internal static string SerializeResult(object? result) => result switch
     {
         null => string.Empty,
         string str => str,
         // No null guard on Text: its getter substitutes string.Empty for a null backing field.
         TextContent tc => JsonSerializer.Serialize(tc.Text),
         JsonElement el => el.GetRawText(),
+        CallToolResult ctr => JsonSerializer.Serialize(ctr, McpJsonUtilities.DefaultOptions),
+        // McpClientTool returns the MCP content blocks converted to AIContent; each keeps its original block as
+        // RawRepresentation. Rebuild the CallToolResult from those, or embedded resources (e.g. an A2UI payload)
+        // reach the app flattened to text, without their MIME type.
+        IEnumerable<AIContent> contents when contents.All(c => c.RawRepresentation is ContentBlock) =>
+            JsonSerializer.Serialize(
+                new CallToolResult { Content = [.. contents.Select(c => (ContentBlock)c.RawRepresentation!)] },
+                McpJsonUtilities.DefaultOptions),
         _ => JsonSerializer.Serialize(result),
     };
 

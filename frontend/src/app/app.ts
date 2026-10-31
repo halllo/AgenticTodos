@@ -1,8 +1,10 @@
-import { ChangeDetectionStrategy, Component, inject, OnDestroy, OnInit, signal, viewChild } from '@angular/core';
+import { ChangeDetectionStrategy, Component, effect, ElementRef, inject, OnDestroy, OnInit, signal, viewChild } from '@angular/core';
 import { RouterOutlet } from '@angular/router';
 import { ChatComponent } from './chat.component';
 import { TodosComponent } from './todos.component';
 import { ResizerComponent } from './resizer.component';
+import { AppPanelComponent } from './app-panel.component';
+import { AppPanelService } from './app-panel.service';
 import { WebmcpService } from './webmcp.service';
 
 const TODOS_APP_URI = 'ui://todos/todos-app.html';
@@ -25,7 +27,7 @@ async function inlineAppHtml(title: string, scriptUrl: string): Promise<string> 
 
 @Component({
   selector: 'app-root',
-  imports: [RouterOutlet, ChatComponent, TodosComponent, ResizerComponent],
+  imports: [RouterOutlet, ChatComponent, TodosComponent, ResizerComponent, AppPanelComponent],
   template: `
     <div class="app">
       <div class="app__leftPanel" #leftPanel [style.background]="leftPanelBackground()">
@@ -34,6 +36,13 @@ async function inlineAppHtml(title: string, scriptUrl: string): Promise<string> 
       <app-resizer [leftPanel]="leftPanel" [rightPanel]="rightPanel" />
       <div class="app__rightPanel" #rightPanel>
         <app-chat/>
+      </div>
+      @if (appPanel.apps().length) {
+        <app-resizer [leftPanel]="rightPanel" [rightPanel]="sidePanel" />
+      }
+      <!-- Always in the DOM so the resizer can hold a reference to it; hidden while it holds no apps. -->
+      <div class="app__sidePanel" #sidePanel [hidden]="!appPanel.apps().length">
+        <app-panel />
       </div>
     </div>
     <router-outlet />
@@ -69,6 +78,18 @@ async function inlineAppHtml(title: string, scriptUrl: string): Promise<string> 
       min-width: 0;
     }
 
+    .app__sidePanel {
+      flex: 2;
+      display: flex;
+      overflow: hidden;
+      min-height: 0;
+      min-width: 0;
+    }
+
+    .app__sidePanel[hidden] {
+      display: none;
+    }
+
     .app__leftPanel app-todos {
       flex: 1;
       min-height: 0;
@@ -89,6 +110,18 @@ export class App implements OnInit, OnDestroy {
   protected readonly leftPanelBackground = signal('var(--brand-gradient)');
   private readonly webmcp = inject(WebmcpService);
   private readonly todos = viewChild<TodosComponent>('todos');
+  protected readonly appPanel = inject(AppPanelService);
+  private readonly rightPanel = viewChild.required<ElementRef<HTMLElement>>('rightPanel');
+
+  constructor() {
+    // Dragging the chat/side-panel resizer pins the chat to a fixed width; once the side panel empties
+    // and hides, hand the chat its flex back so it fills the space again.
+    effect(() => {
+      if (!this.appPanel.apps().length) {
+        this.rightPanel().nativeElement.style.flex = '';
+      }
+    });
+  }
 
   async ngOnInit() {
     this.webmcp.registerTool({

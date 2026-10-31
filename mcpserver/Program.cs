@@ -5,6 +5,7 @@ builder.Services.AddMcpServer()
     .WithMcpApp<GetTimeApp>()
     .WithMcpApp<ThreejsApp>()
     .WithMcpApp<PdfViewerApp>()
+    .WithMcpApp<A2uiApp>()
     ;
 
 var app = builder.Build();

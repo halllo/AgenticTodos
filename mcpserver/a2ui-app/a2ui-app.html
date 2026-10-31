@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <title>A2UI App</title>
+    <style>
+      html, body {
+        margin: 0;
+        padding: 0;
+        font-family: var(--font-sans, system-ui, sans-serif);
+        color: var(--color-text-primary, #1f2328);
+        background: transparent;
+      }
+      #root {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+        padding: 8px;
+      }
+      #status {
+        font-size: 12px;
+        color: var(--color-text-secondary, #656d76);
+      }
+      #status:empty {
+        display: none;
+      }
+      #status.error {
+        color: var(--color-text-danger, #cf222e);
+      }
+    </style>
+  </head>
+  <body>
+    <div id="root">
+      <div id="surfaces"></div>
+      <div id="status">Waiting for A2UI payload...</div>
+    </div>
+    <script type="module" src="/a2ui-app.ts"></script>
+  </body>
+</html>

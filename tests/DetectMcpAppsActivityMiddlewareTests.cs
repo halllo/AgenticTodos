@@ -1,5 +1,7 @@
 using System.Text.Json;
 using AgenticTodos.Backend;
+using ModelContextProtocol;
+using ModelContextProtocol.Protocol;
 
 namespace AgenticTodos.Tests;
 
@@ -147,5 +149,32 @@ public class DetectMcpAppsActivityMiddlewareTests
         Assert.Single(items);
         Assert.Equal("text", items[0].GetProperty("type").GetString());
         Assert.Equal(expectedText, items[0].GetProperty("text").GetString());
+    }
+// ---------------------------------------------------------------------------
+    // SerializeResult — MCP tool results reach the app as the original content blocks
+    // ---------------------------------------------------------------------------
+
+    [Fact]
+    public void SerializeResult_McpAIContents_KeepsEmbeddedResourceWithMimeType()
+    {
+        // What McpClientTool hands back: content blocks converted to AIContent.
+        var contents = new ContentBlock[]
+        {
+            new TextContentBlock { Text = "Rendered." },
+            new EmbeddedResourceBlock
+            {
+                Resource = new TextResourceContents { Uri = "a2ui://surface", MimeType = "application/a2ui+json", Text = "[]" },
+            },
+        }.ToAIContents();
+
+        using var doc = JsonDocument.Parse(DetectMcpAppsActivityMiddleware.NormalizeToolResult(
+            DetectMcpAppsActivityMiddleware.SerializeResult(contents)));
+
+        var items = doc.RootElement.GetProperty("content").EnumerateArray().ToArray();
+        Assert.Equal(2, items.Length);
+        Assert.Equal("Rendered.", items[0].GetProperty("text").GetString());
+        Assert.Equal("resource", items[1].GetProperty("type").GetString());
+        Assert.Equal("application/a2ui+json", items[1].GetProperty("resource").GetProperty("mimeType").GetString());
+        Assert.Equal("[]", items[1].GetProperty("resource").GetProperty("text").GetString());
     }
 }
