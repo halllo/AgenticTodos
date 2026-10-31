@@ -105,7 +105,7 @@ public class A2uiApp()
         }));
     }
 
-    [McpServerResource(UriTemplate = URI, MimeType = "text/html;profile=mcp-app")]
+    [McpServerResource(UriTemplate = URI, MimeType = "text/html;profile=mcp-app", Title = "A2UI canvas"), Description("A canvas for A2UI surfaces. Opened on its own it starts empty: ask the chat to build a surface into it.")]
     public async Task<string> A2uiUIResource() =>
         await File.ReadAllTextAsync(Path.Combine(Directory.GetCurrentDirectory(), "a2ui-app", "dist", "a2ui-app.html"));
 

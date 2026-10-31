@@ -6,6 +6,7 @@ import { form, FormField, required } from '@angular/forms/signals';
 import { WebmcpService } from './webmcp.service';
 import { McpAppComponent } from './mcp-app.component';
 import { AppPanelService } from './app-panel.service';
+import { AppLauncherComponent } from './app-launcher.component';
 
 interface NewMessageViewModel {
   content: string;
@@ -45,7 +46,7 @@ type ResumeResponse = { status: 'resolved'; payload?: unknown } | { status: 'can
  */
 /** Mirrors McpAppShownNoteMiddleware.Injector.AppShownNote in the backend. */
 const APP_SHOWN_NOTE =
-  '[The user sees this tool result as an interactive app in the chat. Do not repeat or summarize what it shows; '
+  '[The user sees this tool result as an interactive app. Do not repeat or summarize what it shows; '
   + 'answer in at most one short sentence, adding only what the app does not show.]';
 
 function isErrorResult(result: unknown): boolean {
@@ -114,6 +115,8 @@ interface MessageViewModel {
   toolResult?: unknown;
   /** Where an activity's MCP app comes from: a server-side tool's snapshot, or a frontend tool run here. */
   appSource?: 'server' | 'frontend';
+  /** The app's tool call went to the app already open in the side panel, so this card only says so. */
+  updatedInPanel?: boolean;
   attachments?: Attachment[];
   risk?: RiskClassification;
   approval?: ApprovalViewModel;
@@ -123,7 +126,7 @@ interface MessageViewModel {
 
 @Component({
   selector: 'app-chat',
-  imports: [FormField, JsonPipe, McpAppComponent],
+  imports: [FormField, JsonPipe, McpAppComponent, AppLauncherComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <div class="chat">
@@ -140,6 +143,7 @@ interface MessageViewModel {
               <option [value]="agent">{{ agent }}</option>
             }
           </select>
+          <app-launcher />
         </div>
         <div class="chat__status" [class.chat__status--active]="!isLoading()">
           {{ status() }}
@@ -191,7 +195,11 @@ interface MessageViewModel {
               @if (message.role === 'activity') {
                 <div class="chat__appHeader">
                   <span class="chat__toolIndicator">MCP App · {{ message.resourceUri }}</span>
-                  @if (message.messageId) {
+                  @if (message.updatedInPanel) {
+                    <button type="button" class="chat__appButton" (click)="showInChat(message)" title="Render this result here as well">
+                      Show in chat
+                    </button>
+                  } @else if (message.messageId) {
                     @if (appPanel.isOpen(message.messageId)) {
                       <button type="button" class="chat__appButton" (click)="appPanel.close(message.messageId)">
                         Back to chat
@@ -203,7 +211,9 @@ interface MessageViewModel {
                     }
                   }
                 </div>
-                @if (appPanel.isOpen(message.messageId)) {
+                @if (message.updatedInPanel) {
+                  <div class="chat__appPlaceholder">Updated the app in the side panel.</div>
+                } @else if (appPanel.isOpen(message.messageId)) {
                   <div class="chat__appPlaceholder">Shown in the side panel.</div>
                 } @else {
                   <app-mcp-app
@@ -971,6 +981,12 @@ export class ChatComponent {
   protected readonly agents = httpResource<string[]>(() => '/agents');
   protected readonly selectedAgent = linkedSignal<string | undefined>(() => this.agents.value()?.[0]);
 
+  constructor() {
+    // Apps in the side panel, moved there from the chat or opened from the launcher, post their
+    // ui/message through the same path as apps in the chat.
+    this.appPanel.messageHandler = this.sendAppMessage;
+  }
+
   // Auto-scroll effect: scroll to bottom when messages change, but only if user is already near bottom
   private autoScrollEffect = effect(() => {
     this.messages(); // Track messages changes
@@ -1191,6 +1207,7 @@ export class ChatComponent {
             toolInput,
             toolResult,
             appSource: 'server',
+            updatedInPanel: this.deliverToPanel(event.messageId, resourceUri, 'server', toolInput, toolResult),
           });
           return;
         }
@@ -1264,6 +1281,7 @@ export class ChatComponent {
               toolInput: call.args ?? {},
               toolResult,
               appSource: 'frontend',
+              updatedInPanel: this.deliverToPanel(call.id, resourceUri, 'frontend', call.args ?? {}, toolResult),
             });
             // The backend's note for server-side apps (McpAppShownNoteMiddleware), added here because
             // only this client runs the tool and renders its app. The chat bubble above keeps the plain result.
@@ -1516,8 +1534,6 @@ export class ChatComponent {
   };
 
   protected openInPanel(message: MessageViewModel): void {
-    // Apps in the side panel post their ui/message through the same path as those in the chat.
-    this.appPanel.messageHandler ??= this.sendAppMessage;
     this.appPanel.open({
       id: message.messageId!,
       resourceUri: message.resourceUri!,
@@ -1580,6 +1596,8 @@ export class ChatComponent {
         // Tells the backend this client renders MCP apps, so it can tell the model the user already
         // sees an app's result (McpAppShownNoteMiddleware). A text-only client leaves it out.
         forwardedProps: { mcpApps: true },
+        // Which apps are open in the side panel and what they show, so the chat can refer to them.
+        context: await this.appPanel.modelContext(),
         ...(resume?.length ? { resume } : {}),
       };
       await this.agent?.runAgent(parameters);
@@ -1721,6 +1739,31 @@ export class ChatComponent {
 
   // Activity snapshots (MCP apps, EU AI Act risk) replace in place when re-sent with the same
   // messageId, otherwise they are appended.
+  /**
+   * A tool call of an app that is open in the side panel updates that app instead of rendering a second
+   * copy in the chat. Not for the card's own app: one moved to the panel already shows this result.
+   */
+  private deliverToPanel(
+    messageId: string | undefined,
+    resourceUri: string | undefined,
+    source: 'server' | 'frontend',
+    toolInput: Record<string, unknown> | undefined,
+    toolResult: unknown,
+  ): boolean {
+    if (!resourceUri || this.appPanel.isOpen(messageId)) {
+      return false;
+    }
+    const existing = this.messages().find(m => m.role === 'activity' && m.messageId === messageId);
+    if (existing && !existing.updatedInPanel) {
+      return false; // already rendered in the chat by an earlier snapshot of this call
+    }
+    return this.appPanel.deliver(resourceUri, source, toolInput, toolResult);
+  }
+
+  protected showInChat(message: MessageViewModel): void {
+    this.messages.update(msgs => msgs.map(m => (m === message ? { ...m, updatedInPanel: false } : m)));
+  }
+
   private upsertActivityMessage(messageId: string | undefined, vm: MessageViewModel): void {
     const existing = messageId === undefined ? -1 : this.messages().findIndex(
       m => (m.role === 'activity' || m.role === 'risk') && m.messageId === messageId

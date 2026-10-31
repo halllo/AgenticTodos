@@ -5,8 +5,10 @@ import {
   input,
   OnDestroy,
   ViewChild,
+  effect,
   inject,
   signal,
+  untracked,
 } from '@angular/core';
 import {
   AppBridge,
@@ -53,13 +55,17 @@ const SANDBOX_READY_TIMEOUT_MS = 10_000;
 })
 export class McpAppComponent implements AfterViewInit, OnDestroy {
   resourceUri = input.required<string>();
-  toolInput = input<Record<string, unknown>>({});
+  // Both absent for an app opened from the launcher: it starts without a tool call. A later change of
+  // either (a follow-up tool call delivered to an app in the side panel) is sent to the running app.
+  toolInput = input<Record<string, unknown> | undefined>(undefined);
   toolResult = input<unknown>(null);
   // Which MCP server serves the app's resource and answers its tool calls: the backend's MCP server
   // through the relay, or the tab's WebMCP server for frontend tools.
   source = input<'server' | 'frontend'>('server');
   // Delivers an app's ui/message to the chat as a user turn; resolves false when the chat cannot take it now.
   sendMessage = input<(text: string) => Promise<boolean>>();
+  // Receives what the app reports about itself (ui/update-model-context), as text for the model.
+  updateModelContext = input<(text: string) => void>();
 
   @ViewChild('iframeEl') iframeRef!: ElementRef<HTMLIFrameElement>;
 
@@ -70,6 +76,18 @@ export class McpAppComponent implements AfterViewInit, OnDestroy {
   private appBridge: AppBridge | null = null;
   private sandboxAbort = new AbortController();
   private iframeResizeObserver: ResizeObserver | null = null;
+  /** Set once the app is initialized and has been sent its initial tool data. */
+  private ready = false;
+
+  constructor() {
+    effect(() => {
+      const toolInput = this.toolInput();
+      const toolResult = this.toolResult();
+      if (this.ready) {
+        untracked(() => this.sendToolData(toolInput, toolResult));
+      }
+    });
+  }
 
   async ngAfterViewInit(): Promise<void> {
     try {
@@ -173,6 +191,11 @@ export class McpAppComponent implements AfterViewInit, OnDestroy {
 
     appBridge.onupdatemodelcontext = async (params) => {
       console.log('[McpAppComponent] Model context update from MCP App:', params);
+      const text = [
+        ...(params.content ?? []).flatMap(c => (c.type === 'text' ? [c.text] : [])),
+        ...(params.structuredContent ? [JSON.stringify(params.structuredContent)] : []),
+      ].join('\n');
+      this.updateModelContext()?.(text);
       return {};
     };
 
@@ -183,13 +206,19 @@ export class McpAppComponent implements AfterViewInit, OnDestroy {
     await appBridge.sendSandboxResourceReady({ html, csp, permissions });
     await initialized;
 
-    appBridge.sendToolInput({ arguments: this.toolInput() });
+    this.sendToolData(this.toolInput(), this.toolResult());
+    this.ready = true;
+  }
 
-    const result = this.toolResult();
-    if (result != null) {
-      appBridge.sendToolResult(result as CallToolResult);
+  private sendToolData(toolInput: Record<string, unknown> | undefined, toolResult: unknown): void {
+    if (!this.appBridge || (toolInput === undefined && toolResult == null)) {
+      return; // opened from the launcher: no tool call to report
+    }
+    this.appBridge.sendToolInput({ arguments: toolInput ?? {} });
+    if (toolResult != null) {
+      this.appBridge.sendToolResult(toolResult as CallToolResult);
     } else {
-      appBridge.sendToolCancelled({ reason: 'No result available' });
+      this.appBridge.sendToolCancelled({ reason: 'No result available' });
     }
   }
 

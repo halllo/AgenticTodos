@@ -28,6 +28,13 @@ setMarkdownRenderer(renderMarkdown);
 const processor = new MessageProcessor([basicCatalog], onAction);
 processor.onSurfaceCreated(renderSurfaces);
 processor.onSurfaceDeleted(renderSurfaces);
+// Each surface's whole data model, kept current as the user edits it; reported to the host below.
+const dataModels = new Map<string, { readonly value: unknown; unsubscribe(): void }>();
+processor.onSurfaceCreated((surface) => dataModels.set(surface.id, surface.dataModel.subscribe("/", reportModelContext)));
+processor.onSurfaceDeleted((surfaceId) => {
+  dataModels.get(surfaceId)?.unsubscribe();
+  dataModels.delete(surfaceId);
+});
 
 const app = new App({ name: "A2UI App", version: "1.0.0" }, {});
 
@@ -68,8 +75,18 @@ function processResult(result: CallToolResult): boolean {
   actions?.forEach((a) => serverActions.add(a));
 
   try {
-    processor.processMessages(JSON.parse(resource.resource.text));
+    const messages = JSON.parse(resource.resource.text) as { createSurface?: { surfaceId?: string } }[];
+    // A later tool result (e.g. a follow-up from the chat into this app in the side panel) may create a
+    // surface this app already shows: replace it rather than fail on the duplicate id.
+    const replaced = messages
+      .map((m) => m.createSurface?.surfaceId)
+      .filter((id): id is string => !!id && processor.getSurfaces().has(id));
+    if (replaced.length) {
+      processor.processMessages(replaced.map((surfaceId) => ({ version: "v0.9", deleteSurface: { surfaceId } }) as never));
+    }
+    processor.processMessages(messages as never);
     setStatus("");
+    reportModelContext();
   } catch (e) {
     console.error("[A2UI App] failed to process A2UI messages", e);
     setStatus(`Invalid A2UI payload: ${e instanceof Error ? e.message : String(e)}`, true);
@@ -104,6 +121,28 @@ async function onAction(action: ActionPayload): Promise<void> {
     console.error("[A2UI App] action failed", e);
     setStatus(`Action "${action.name}" failed: ${e instanceof Error ? e.message : String(e)}`, true);
   }
+}
+
+let reportTimer: ReturnType<typeof setTimeout> | undefined;
+
+/**
+ * Tells the host what this app shows (ui/update-model-context), so the chat can refer to it in
+ * follow-ups: each surface's id and its current data model, which the user's input changes.
+ */
+function reportModelContext(): void {
+  clearTimeout(reportTimer);
+  reportTimer = setTimeout(() => {
+    const surfaces = [...processor.getSurfaces().values()].map((s) => ({
+      surfaceId: s.id,
+      dataModel: dataModels.get(s.id)?.value,
+    }));
+    const text = surfaces.length
+      ? `A2UI surfaces shown:\n${JSON.stringify(surfaces, null, 2)}`
+      : "No A2UI surface shown yet.";
+    app.updateModelContext({ content: [{ type: "text", text }] }).catch((e) =>
+      console.warn("[A2UI App] could not update the model context", e),
+    );
+  }, 300);
 }
 
 function renderSurfaces(): void {

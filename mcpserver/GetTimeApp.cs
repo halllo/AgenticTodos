@@ -13,7 +13,7 @@ public class GetTimeApp()
         new TextContentBlock { Text = $"{DateTime.Now}" },
     ];
     
-    [McpServerResource(UriTemplate = URI, MimeType = "text/html;profile=mcp-app")]
+    [McpServerResource(UriTemplate = URI, MimeType = "text/html;profile=mcp-app", Title = "Server time"), Description("Shows the MCP server's current time.")]
     public async Task<string> GetTimeUIResource() =>
         await File.ReadAllTextAsync(Path.Combine(Directory.GetCurrentDirectory(), "get-time-app", "dist", "get-time.html"));
 }

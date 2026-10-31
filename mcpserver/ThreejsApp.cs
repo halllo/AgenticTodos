@@ -145,7 +145,7 @@ public class ThreejsApp()
         new TextContentBlock { Text = Documentation },
     ];
 
-    [McpServerResource(UriTemplate = URI, MimeType = "text/html;profile=mcp-app")]
+    [McpServerResource(UriTemplate = URI, MimeType = "text/html;profile=mcp-app", Title = "Three.js scene"), Description("An interactive 3D scene. Opened on its own it shows a default scene: ask the chat to change it.")]
     public async Task<string> ThreejsUIResource() =>
         await File.ReadAllTextAsync(Path.Combine(Directory.GetCurrentDirectory(), "threejs-app", "dist", "mcp-app.html"));
 }

@@ -73,7 +73,7 @@ public class PdfViewerApp
         return [new TextContentBlock { Text = result }];
     }
 
-    [McpServerResource(UriTemplate = URI, MimeType = "text/html;profile=mcp-app")]
+    [McpServerResource(UriTemplate = URI, MimeType = "text/html;profile=mcp-app", Title = "PDF viewer"), Description("An interactive PDF viewer. Opened on its own it starts empty: ask the chat to open a PDF in it.")]
     public async Task<ReadResourceResult> PdfViewerUIResource()
     {
         var html = await File.ReadAllTextAsync(

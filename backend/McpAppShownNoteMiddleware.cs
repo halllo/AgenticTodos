@@ -25,7 +25,7 @@ internal static class McpAppShownNoteMiddleware
     internal sealed class Injector(IChatClient innerClient) : DelegatingChatClient(innerClient)
     {
         internal const string AppShownNote =
-            "[The user sees this tool result as an interactive app in the chat. Do not repeat or summarize what it shows; "
+            "[The user sees this tool result as an interactive app. Do not repeat or summarize what it shows; "
             + "answer in at most one short sentence, adding only what the app does not show.]";
 
         /// <summary>The AG-UI <c>forwardedProps</c> key a client sets to <c>true</c> when it renders MCP apps.</summary>

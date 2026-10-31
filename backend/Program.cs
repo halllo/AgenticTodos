@@ -213,7 +213,8 @@ static AIAgent CreateAgent(IChatClient chatClient, AIFunction[] tools, IServiceP
                 // provider seam is the one ChatClientAgent consults on every run, and it is where this
                 // app's two history repairs hook in (see FileSystemChatHistoryProvider).
                 ChatHistoryProvider = new FileSystemChatHistoryProvider(),
-                AIContextProviders = [],
+                // The AG-UI request's context entries (e.g. MCP apps open in the side panel) as per-run instructions.
+                AIContextProviders = [new ClientContextProvider()],
             },
             services: services)
         .AsBuilder()

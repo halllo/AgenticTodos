@@ -16,10 +16,16 @@ import { AppPanelService } from './app-panel.service';
         @for (app of panel.apps(); track app.id) {
           <section class="appPanel__item">
             <div class="appPanel__itemHeader">
-              <span class="appPanel__itemTitle" [title]="app.resourceUri">{{ app.resourceUri }}</span>
-              <button type="button" class="appPanel__button" (click)="panel.close(app.id)" title="Move this app back into the chat">
-                Back to chat
-              </button>
+              <span class="appPanel__itemTitle" [title]="app.resourceUri">{{ app.title ?? app.resourceUri }}</span>
+              @if (app.id.startsWith('launch-')) {
+                <button type="button" class="appPanel__button" (click)="panel.close(app.id)" title="Close this app">
+                  Close
+                </button>
+              } @else {
+                <button type="button" class="appPanel__button" (click)="panel.close(app.id)" title="Move this app back into the chat">
+                  Back to chat
+                </button>
+              }
             </div>
             <app-mcp-app
               [resourceUri]="app.resourceUri"
@@ -27,6 +33,7 @@ import { AppPanelService } from './app-panel.service';
               [toolResult]="app.toolResult"
               [source]="app.source"
               [sendMessage]="panel.sendMessage"
+              [updateModelContext]="contextUpdater(app.id)"
             />
           </section>
         }
@@ -116,4 +123,16 @@ import { AppPanelService } from './app-panel.service';
 })
 export class AppPanelComponent {
   protected readonly panel = inject(AppPanelService);
+
+  // One stable callback per app: a fresh closure on every change detection would re-set the input each time.
+  private readonly contextUpdaters = new Map<string, (text: string) => void>();
+
+  protected contextUpdater(id: string): (text: string) => void {
+    let updater = this.contextUpdaters.get(id);
+    if (!updater) {
+      updater = text => this.panel.setModelContext(id, text);
+      this.contextUpdaters.set(id, updater);
+    }
+    return updater;
+  }
 }
