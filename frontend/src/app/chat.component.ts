@@ -43,6 +43,15 @@ type ResumeResponse = { status: 'resolved'; payload?: unknown } | { status: 'can
  * shows just their text, like it does for a frontend tool's result. Anything else stays verbatim —
  * in particular a tool's own JSON that merely has a `text` field next to others.
  */
+/** Mirrors McpAppShownNoteMiddleware.Injector.AppShownNote in the backend. */
+const APP_SHOWN_NOTE =
+  '[The user sees this tool result as an interactive app in the chat. Do not repeat or summarize what it shows; '
+  + 'answer in at most one short sentence, adding only what the app does not show.]';
+
+function isErrorResult(result: unknown): boolean {
+  return typeof result === 'object' && result !== null && (result as { isError?: unknown }).isError === true;
+}
+
 function toolResultText(content: string): string {
   let parsed: unknown;
   try {
@@ -1256,6 +1265,11 @@ export class ChatComponent {
               toolResult,
               appSource: 'frontend',
             });
+            // The backend's note for server-side apps (McpAppShownNoteMiddleware), added here because
+            // only this client runs the tool and renders its app. The chat bubble above keeps the plain result.
+            if (!isErrorResult(toolResult)) {
+              call.result = `${call.result}\n\n${APP_SHOWN_NOTE}`;
+            }
           }
         }
 
@@ -1563,6 +1577,9 @@ export class ChatComponent {
           description: t.description,
           parameters: t.inputSchema,
         })),
+        // Tells the backend this client renders MCP apps, so it can tell the model the user already
+        // sees an app's result (McpAppShownNoteMiddleware). A text-only client leaves it out.
+        forwardedProps: { mcpApps: true },
         ...(resume?.length ? { resume } : {}),
       };
       await this.agent?.runAgent(parameters);

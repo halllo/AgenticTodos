@@ -195,6 +195,9 @@ static AIAgent CreateAgent(IChatClient chatClient, AIFunction[] tools, IServiceP
         // splits a turn that calls server and client tools in parallel (see ClientToolDeferralMiddleware).
         .AsBuilder()
         .UseClientToolDeferral()
+        // Tells the model the user already sees an MCP app's result, so it does not restate it — for a client
+        // that declares it renders apps (forwardedProps.mcpApps).
+        .UseMcpAppShownNote()
         .Build(services)
         .AsAIAgent(
             options: new ChatClientAgentOptions
